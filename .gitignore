@@ -1,0 +1,10 @@
+node_modules/
+**/node_modules/
+web-client/public/
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+*.log
+.DS_Store
+share/map-noise-experiment/
+.codex/config.toml

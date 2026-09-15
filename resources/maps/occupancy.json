@@ -1,0 +1,13 @@
+{
+  "width": 1600,
+  "height": 1200,
+  "threshold": 230,
+  "inflateRadiusPx": 8,
+  "freePixelCm": 5,
+  "freeCells": 1001472,
+  "inflatedFreeCells": 943242,
+  "source": "yard.png",
+  "corridorWidthPx": 48,
+  "wallPx": 48,
+  "note": "yard: left hall + 48px corridor + plus intersection. 1=free."
+}

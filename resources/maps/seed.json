@@ -1,0 +1,30 @@
+{
+  "waypoints": [
+    { "id": "wp-1", "x": 320, "y": 360, "theta": 0 },
+    { "id": "wp-2", "x": 720, "y": 600, "theta": 0 },
+    { "id": "wp-3", "x": 1248, "y": 200, "theta": 1.5708 }
+  ],
+  "chargingStations": [
+    { "id": "cs-1", "x": 160, "y": 160, "theta": 0 },
+    { "id": "cs-2", "x": 160, "y": 1040, "theta": 1.5708 },
+    { "id": "cs-3", "x": 720, "y": 160, "theta": 3.1416 }
+  ],
+  "robots": [
+    {
+      "id": "robot-1",
+      "x": 240,
+      "y": 520,
+      "theta": 0,
+      "status": "idle",
+      "sprite": "robot.png"
+    },
+    {
+      "id": "robot-2",
+      "x": 420,
+      "y": 720,
+      "theta": 0,
+      "status": "idle",
+      "sprite": "robot-2.png"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "bg_fms",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "server": "bun run --cwd server start",
+    "web": "bun run --cwd web-client start",
+    "robot-1": "bun run --cwd virtual-robot start -- --id robot-1",
+    "robot-2": "bun run --cwd virtual-robot start -- --id robot-2",
+    "smoke": "bun run scripts/smoke.ts",
+    "occupancy": "bun run scripts/generate_yard_map.ts",
+    "maps:floor-assets": "bun run scripts/generate_floor_assets.ts",
+    "check:editor": "bun run scripts/check_editor.ts",
+    "setup:driving": "bun run scripts/setup_driving.ts",
+    "check:driving:live": "bun run scripts/check_driving_live.ts",
+    "check:driving:resources": "bun run scripts/check_driving_resources.ts",
+    "check:driving:web": "bun run web-client/check_driving.ts",
+    "check:protocol": "bun test scripts/protocol.integration.test.ts scripts/robot_session.integration.test.ts",
+    "test": "bun test",
+    "occupancy:legacy": "bun run scripts/generate_occupancy.ts",
+    "test:traffic-v1": "bun test shared/traffic/localPlan.test.ts server/src/traffic/policies/LocalPlanPolicy.test.ts && bun run scripts/v1_overlap_sim.ts",
+    "check:properties:web": "bun run web-client/check_properties.ts",
+    "check:workspace:web": "bun run web-client/check_workspace.ts",
+    "check:runtime:web": "bun run web-client/check_runtime.ts"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

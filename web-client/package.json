@@ -1,0 +1,11 @@
+{
+  "name": "bg-fms-web-client",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/server.ts"
+  },
+  "dependencies": {
+    "colyseus.js": "^0.16.22"
+  }
+}

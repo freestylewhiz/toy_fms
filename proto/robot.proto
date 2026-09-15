@@ -1,0 +1,328 @@
+syntax = "proto3";
+
+package bgfms;
+
+service RobotBridge {
+  rpc Session(stream RobotToServer) returns (stream ServerToRobot);
+}
+
+message RobotToServer {
+  oneof payload {
+    RegisterRequest register = 1;
+    PoseUpdate pose = 2;
+    PathUpdate path = 3;
+    PlaceReply place_reply = 4;
+    LeaseRequest lease_request = 5;
+    LeaseRelease lease_release = 6;
+    TrafficBid traffic_bid = 7;
+    EvasionReply evasion_reply = 8;
+    BreadcrumbUpdate breadcrumb = 9;
+    LocalPlanUpdate local_plan = 10;
+    CommandStateUpdate command_state = 11;
+    ControlAck control_ack = 12;
+  }
+}
+
+message ServerToRobot {
+  oneof payload {
+    DriveCommand drive = 1;
+    CancelCommand cancel = 2;
+    PlaceQuery place_query = 3;
+    ObstacleSnapshot obstacles = 4;
+    LeaseGrant lease_grant = 5;
+    BidRequest bid_request = 6;
+    EvasionRequest evasion_request = 7;
+    ZoneUpdate zone_update = 8;
+    // Sim-only sensing proxy (see SIM_PEER_SENSING_DEFAULT). Not used by traffic lease logic.
+    SensedPeers sensed_peers = 9;
+    FleetLocalPlans fleet_local_plans = 10;
+    SemanticSnapshotMessage semantic_snapshot = 11;
+    SessionReady session_ready = 12;
+    Heartbeat heartbeat = 13;
+    ControlState control_state = 14;
+  }
+}
+
+// Versioned editor snapshot, including navigation zones (shared/semantic.ts).
+message SemanticSnapshotMessage {
+  string json = 1;
+}
+
+/** Anonymous peer poses for virtual sensing — no paths / ids required by planner. */
+message SensedPeer {
+  string robot_id = 1; // diagnostic only; robot must not plan on id
+  double x = 2;
+  double y = 3;
+  double theta = 4;
+}
+
+message SensedPeers {
+  repeated SensedPeer peers = 1;
+  uint64 control_epoch = 2;
+  string session_id = 3;
+}
+
+message LocalPlanUpdate {
+  string robot_id = 1;
+  repeated PathPoint points = 2;
+  double horizon_s = 3;
+  uint64 control_epoch = 4;
+  string session_id = 5;
+}
+
+message PeerLocalPlan {
+  string robot_id = 1;
+  double x = 2;
+  double y = 3;
+  double theta = 4;
+  repeated PathPoint points = 5;
+}
+
+message FleetLocalPlans {
+  repeated PeerLocalPlan peers = 1;
+  uint64 control_epoch = 2;
+  string session_id = 3;
+}
+
+message RegisterRequest {
+  string robot_id = 1;
+  uint32 protocol_version = 2;
+}
+
+// Sent after the initial resource snapshots; motion requires this handshake.
+message SessionReady {
+  string robot_id = 1;
+  uint32 protocol_version = 2;
+  uint32 heartbeat_ms = 3;
+  string session_id = 4;
+  uint64 control_epoch = 5;
+  bool enabled = 6;
+}
+
+message Heartbeat {
+  int64 server_time_ms = 1;
+}
+
+// Command identifiers are retained through traffic waits and reconnects.
+message CommandStateUpdate {
+  string robot_id = 1;
+  string command_id = 2;
+  string state = 3;
+  string reason = 4;
+  uint64 control_epoch = 5;
+  string session_id = 6;
+}
+
+message PoseUpdate {
+  string robot_id = 1;
+  double x = 2;
+  double y = 3;
+  double theta = 4;
+  string status = 5;
+  string lease_id = 6;
+  string motion = 7;
+  bool avoidance_mode = 8;
+  double head_room_px = 9;
+  string traffic_status = 10;
+  string command_id = 11;
+  string command_state = 12;
+  string command_reason = 13;
+  uint64 control_epoch = 14;
+  string session_id = 15;
+  string navigation_mode = 16;
+  string path_planning_authority = 17;
+  string work_state = 18;
+  string drive_state = 19;
+  string drive_context_json = 20;
+  int64 reported_at = 21;
+}
+
+message PathPoint {
+  double x = 1;
+  double y = 2;
+}
+
+message PathNode {
+  double x = 1;
+  double y = 2;
+  double s = 3;
+  double clearance = 4;
+}
+
+message PathUpdate {
+  string robot_id = 1;
+  repeated PathPoint points = 2;
+  string plan_id = 3;
+  repeated PathNode nodes = 4;
+  double total_s = 5;
+  uint64 control_epoch = 6;
+  string session_id = 7;
+}
+
+message DriveCommand {
+  string command_id = 1;
+  string kind = 2;
+  double x = 3;
+  double y = 4;
+  double theta = 5;
+  uint64 control_epoch = 6;
+  string session_id = 7;
+}
+
+message CancelCommand {
+  // The active drive command to cancel; empty means cancel any active command.
+  string command_id = 1;
+  uint64 control_epoch = 2;
+  string session_id = 3;
+}
+
+message ObstacleShape {
+  string id = 1;
+  string kind = 2;
+  double x = 3;
+  double y = 4;
+  double size = 5;
+  double theta = 6;
+}
+
+message PlaceQuery {
+  string query_id = 1;
+  ObstacleShape obstacle = 2;
+}
+
+message PlaceReply {
+  string query_id = 1;
+  string robot_id = 2;
+  bool ok = 3;
+  string reason = 4;
+}
+
+message ObstacleSnapshot {
+  repeated ObstacleShape items = 1;
+}
+
+message Capsule {
+  double x1 = 1;
+  double y1 = 2;
+  double x2 = 3;
+  double y2 = 4;
+  double r = 5;
+}
+
+message Corridor {
+  repeated Capsule segments = 1;
+}
+
+message LeaseRequest {
+  string robot_id = 1;
+  string request_id = 2;
+  string lease_id = 3;
+  Corridor wanted = 4;
+  double gain_px = 5;
+  bool urgent = 6;
+  uint64 control_epoch = 7;
+  string session_id = 8;
+}
+
+enum Signal {
+  SIGNAL_STOP = 0;
+  SIGNAL_PROCEED = 1;
+  SIGNAL_PARTIAL = 2;
+}
+
+message LeaseGrant {
+  string request_id = 1;
+  string lease_id = 2;
+  Signal signal = 3;
+  Corridor held = 4;
+  int64 lease_until_ms = 5;
+  string zone_id = 6;
+  string reason = 7;
+  uint64 control_epoch = 8;
+  string session_id = 9;
+}
+
+message LeaseRelease {
+  string robot_id = 1;
+  string lease_id = 2;
+  Corridor freed = 3;
+  Corridor retained = 4;
+  uint64 control_epoch = 5;
+  string session_id = 6;
+}
+
+message BidRequest {
+  string zone_id = 1;
+  int64 window_ms = 2;
+  uint64 control_epoch = 3;
+  string session_id = 4;
+}
+
+message TrafficBid {
+  string zone_id = 1;
+  double seed = 2;
+  uint64 control_epoch = 3;
+  string session_id = 4;
+}
+
+message ZoneUpdate {
+  string zone_id = 1;
+  string state = 2;
+  uint64 control_epoch = 3;
+  string session_id = 4;
+}
+
+enum EvasionMode {
+  EVASION_REROUTE = 0;
+  EVASION_VACATE = 1;
+}
+
+message EvasionRequest {
+  string zone_id = 1;
+  string round_id = 2;
+  string lease_id = 3;
+  Corridor release_hint = 4;
+  EvasionMode mode = 5;
+  repeated string breadcrumb_hint = 6;
+  int64 deadline_ms = 7;
+  uint64 control_epoch = 8;
+  string session_id = 9;
+}
+
+message EvasionReply {
+  string zone_id = 1;
+  string round_id = 2;
+  string result = 3;
+  PathUpdate plan = 4;
+  LeaseRequest lease_request = 5;
+  string reason = 6;
+  uint64 control_epoch = 7;
+  string session_id = 8;
+}
+
+message ControlState {
+  bool enabled = 1;
+  uint64 control_epoch = 2;
+  string session_id = 3;
+}
+
+message ControlAck {
+  string robot_id = 1;
+  uint64 control_epoch = 2;
+  bool enabled = 3;
+  bool ready = 4;
+  string session_id = 5;
+}
+
+message Breadcrumb {
+  string id = 1;
+  double x = 2;
+  double y = 3;
+  double theta = 4;
+  int64 visited_ms = 5;
+}
+
+message BreadcrumbUpdate {
+  string robot_id = 1;
+  repeated Breadcrumb added = 2;
+}

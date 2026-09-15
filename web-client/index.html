@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Atlas Studio · Map workspace</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-block">
+        <div class="brand">
+        <span class="mark" aria-hidden="true"></span>
+          <div>
+            <h1>Atlas <span>Studio</span></h1>
+            <span class="brand-subtitle">BG FMS / MAP WORKSPACE</span>
+          </div>
+        </div>
+        <div class="map-context" aria-label="현재 맵">
+          <span class="context-label">MAP</span>
+          <select id="map-select" aria-label="맵 선택">
+            <option value="yard">yard</option>
+            <option value="1st_floor">1st floor</option>
+          </select>
+          <strong id="map-context-id">yard</strong>
+          <span class="context-divider">/</span>
+          <span id="map-context-version">v1 · 80 × 60 m</span>
+        </div>
+      </div>
+      <nav class="modes" id="modes" aria-label="작업 모드">
+        <button type="button" data-mode="operate" aria-pressed="true"><span class="mode-index">01</span><span><b>운용</b><small>robot control</small></span></button>
+        <button type="button" data-mode="scene" aria-pressed="false"><span class="mode-index">02</span><span><b>현장 배치</b><small>scene authoring</small></span></button>
+        <button type="button" data-mode="vda" aria-pressed="false"><span class="mode-index">03</span><span><b>VDA 배치</b><small>semantic graph</small></span></button>
+      </nav>
+      <div class="top-meta">
+        <div class="conn" id="conn" data-state="offline">
+          <span class="dot"></span>
+          <span id="conn-label">offline</span>
+        </div>
+        <div class="sel-robot"><span>선택 로봇</span><strong id="sel-robot-id">—</strong></div>
+      </div>
+    </header>
+
+    <div class="shell">
+      <aside class="rail" id="rail">
+        <div class="rail-intro">
+          <span class="eyebrow">WORKSPACE</span>
+          <strong id="mode-title">운용</strong>
+          <p id="mode-description">로봇 상태를 확인하고 이동·도킹 명령을 실행해.</p>
+        </div>
+        <section class="tool-group" data-for="operate">
+          <h2><span>01</span> 명령</h2>
+          <div class="tools" id="tools-operate"></div>
+        </section>
+        <section class="tool-group" data-for="scene">
+          <h2><span>01</span> 현장 리소스</h2>
+          <div class="tools" id="tools-scene"></div>
+        </section>
+        <section class="tool-group" data-for="vda">
+          <h2><span>01</span> VDA 그래프</h2>
+          <div class="tools" id="tools-vda-graph"></div>
+          <h2><span>02</span> VDA 존</h2>
+          <div class="tools" id="tools-vda-zone"></div>
+          <h2><span>03</span> 보조</h2>
+          <div class="tools" id="tools-vda-aux"></div>
+        </section>
+        <section class="tool-group always">
+          <h2><span>+</span> 보기</h2>
+          <div class="tools" id="tools-view"></div>
+        </section>
+        <div class="rail-footer">
+          <p class="hint" id="tool-hint">스페이스+드래그 팬, 휠 줌.</p>
+          <span class="shortcut-note">0 fit view · G grid</span>
+        </div>
+      </aside>
+
+      <main class="viewport" id="viewport">
+        <div class="map-hud map-hud-top">
+          <div class="hud-breadcrumb"><span>MAP</span><b>yard</b><i>·</i><span>editor view</span></div>
+          <div class="hud-mode" id="hud-mode">운용 · robot control</div>
+        </div>
+        <canvas id="map" role="img" aria-label="yard map"></canvas>
+        <div id="occ-legend" class="occ-legend" hidden>
+          <div class="occ-legend-title" id="occ-legend-title">Occupancy</div>
+          <div class="occ-legend-row"><i class="swatch free"></i> free</div>
+          <div class="occ-legend-row" id="occ-legend-clearance" hidden><i class="swatch clearance"></i> inflate</div>
+          <div class="occ-legend-row"><i class="swatch blocked"></i> blocked</div>
+        </div>
+        <div id="edit-chrome" class="edit-chrome" hidden>
+          <div class="edit-chrome-main">
+            <span class="edit-badge" id="edit-badge">편집</span>
+            <span class="edit-title" id="edit-title">—</span>
+            <span class="edit-meta mono" id="edit-meta"></span>
+          </div>
+          <div class="edit-chrome-actions">
+            <span class="edit-hint" id="edit-keys">Q/E 회전 · Esc 취소 · Enter 확인</span>
+            <button type="button" id="btn-edit-cancel" class="edit-btn ghost">취소</button>
+            <button type="button" id="btn-edit-confirm" class="edit-btn primary">저장</button>
+          </div>
+        </div>
+      </main>
+
+      <aside class="inspector" id="inspector">
+        <div class="dock-heading">
+          <div>
+            <span class="eyebrow">DETAIL DOCK</span>
+            <strong>작업 정보</strong>
+          </div>
+          <span class="dock-map-chip">yard · v1</span>
+        </div>
+        <section class="dock-section layer-section">
+          <div class="section-heading"><h2>레이어</h2><span>VIEW</span></div>
+          <label class="check"><input type="checkbox" id="ly-zones" checked /> 존</label>
+          <label class="check"><input type="checkbox" id="ly-graph" checked /> 노드·엣지</label>
+          <label class="check"><input type="checkbox" id="ly-corridor" checked /> 엣지 회랑</label>
+          <label class="check"><input type="checkbox" id="ly-scene" checked /> 웨이포인트·충전·장애물</label>
+          <label class="check"><input type="checkbox" id="ly-robots" checked /> 로봇</label>
+        </section>
+        <section class="dock-section robot-section">
+          <div class="section-heading"><h2>로봇 상태</h2><span>LIVE</span></div>
+          <div id="robot-cards" class="cards"></div>
+          <div id="traffic-guide" class="traffic-guide" aria-live="polite">
+            <div class="traffic-guide-title">교통 제어</div>
+            <p id="traffic-selected">로봇을 선택하면 이동·도킹 대상을 맵에서 지정할 수 있어요.</p>
+            <div class="traffic-legend" aria-label="교통 상태 안내">
+              <span data-traffic="clear"><i></i>통행 가능</span>
+              <span data-traffic="proceed"><i></i>진행 허가</span>
+              <span data-traffic="partial"><i></i>부분 진행</span>
+              <span data-traffic="hold"><i></i>대기</span>
+              <span data-traffic="stop"><i></i>정지</span>
+              <span data-traffic="evade"><i></i>회피 중</span>
+            </div>
+          </div>
+          <button type="button" id="btn-cancel" class="danger" disabled>선택 로봇 주행 취소</button>
+        </section>
+        <section id="shape-section" class="dock-section" hidden>
+          <div class="section-heading"><h2>장애물 형태</h2><span>SCENE</span></div>
+          <div class="shape-row" id="shape-row">
+            <button type="button" data-shape="triangle" aria-pressed="false">△</button>
+            <button type="button" data-shape="square" aria-pressed="true">□</button>
+            <button type="button" data-shape="circle" aria-pressed="false">○</button>
+          </div>
+        </section>
+        <section class="dock-section list-section">
+          <div class="section-heading"><h2>리소스 목록</h2><span>OUTLINER</span></div>
+          <div id="outliner" class="outliner"></div>
+        </section>
+        <section class="dock-section inspector-section">
+          <div class="section-heading"><h2>선택 속성</h2><span>INSPECTOR</span></div>
+          <div id="inspect-empty" class="empty"><span class="empty-symbol">⌖</span><b>공간에 의미를 더하세요</b><p>맵이나 왼쪽 목록에서 리소스를 선택하면 위치와 속성을 조정할 수 있습니다.</p><small>새 리소스는 상단 배치 도구에서 선택</small></div>
+          <div id="inspect-panel" class="inspect-panel" hidden>
+            <div class="id-chip">
+              <span class="kind" id="insp-kind">—</span>
+              <span class="id" id="insp-id">—</span>
+            </div>
+            <label class="field" id="insp-name-wrap">
+              <span>이름</span>
+              <input id="insp-name" type="text" maxlength="120" placeholder="리소스 이름" />
+            </label>
+            <label class="field" id="insp-x-wrap">
+              <span>X · px</span>
+              <input id="insp-x" type="number" required step="any" />
+            </label>
+            <label class="field" id="insp-y-wrap">
+              <span>Y · px</span>
+              <input id="insp-y" type="number" required step="any" />
+            </label>
+            <div id="insp-size-wrap" hidden>
+              <label class="field">
+                <span id="insp-size-label">크기 · px</span>
+                <input id="insp-size" type="number" required min="10" max="80" step="any" />
+              </label>
+            </div>
+            <label class="field" id="insp-theta-wrap">
+              <span>회전 θ · °</span>
+              <input id="insp-theta-num" type="number" required step="any" />
+            </label>
+            <label class="slider" id="insp-theta-slider-wrap">
+              <span id="insp-theta-label">0° · 좌우로 드래그</span>
+              <input id="insp-theta" type="range" min="-180" max="180" step="1" aria-label="회전 각도 게이지" />
+            </label>
+            <label class="field" id="insp-factor-wrap" hidden>
+              <span>비용 계수</span>
+              <input id="insp-factor" type="number" required step="0.05" min="0" max="8" />
+            </label>
+            <label class="field" id="insp-speed-wrap" hidden>
+              <span>m/s</span>
+              <input id="insp-speed" type="number" required step="0.1" min="0" />
+            </label>
+            <label class="field" id="insp-capacity-wrap" hidden>
+              <span>용량</span>
+              <input id="insp-capacity" type="number" required step="1" min="1" />
+            </label>
+            <label class="field" id="insp-lw-wrap" hidden>
+              <span>왼쪽 폭 · m</span>
+              <input id="insp-left" type="number" required step="0.05" min="0" />
+            </label>
+            <label class="field" id="insp-rw-wrap" hidden>
+              <span>오른쪽 폭 · m</span>
+              <input id="insp-right" type="number" required step="0.05" min="0" />
+            </label>
+            <div id="resource-fields"></div>
+            <details id="resource-geometry" class="geometry-summary" open><summary>형상 및 연결 정보</summary><div id="geometry-content"></div></details>
+            <p id="property-state" class="property-state" aria-live="polite">저장된 리소스</p>
+            <div class="inspector-actions"><button type="button" id="btn-delete" class="danger" hidden>삭제</button><button type="button" id="btn-properties-cancel">취소</button><button type="button" id="btn-properties-save" class="primary">변경 저장</button></div>
+          </div>
+        </section>
+      </aside>
+    </div>
+
+    <footer class="statusbar">
+      <span class="mono" id="cursor-pos">x —  y —</span>
+      <span id="status-msg">Colyseus 대기 중</span>
+      <span class="mono" id="zoom-label">100%</span>
+    </footer>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

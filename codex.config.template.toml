@@ -1,0 +1,58 @@
+# Codex 프로젝트 권한 설정 템플릿
+# 공식 OpenAI 문서: https://learn.chatgpt.com/docs/config-file/config-reference
+#
+# 사용 방법
+# 1. 이 파일을 프로젝트의 .codex/config.toml로 복사합니다.
+#    기존 파일이 있으면 덮어쓰지 말고 필요한 항목을 병합합니다.
+# 2. 아래 A 또는 B 중 하나만 선택하여 설정 줄의 맨 앞 '# '를 제거합니다.
+#    설명 줄은 주석으로 유지합니다. 현재는 모든 설정이 비활성 상태입니다.
+# 3. 프로젝트를 신뢰한 상태에서 새 Codex 세션을 시작합니다.
+#    주석 상태의 항목은 다른 설정 계층이나 기본값을 그대로 따릅니다.
+#
+# 공통 주의 사항
+# - 같은 키를 두 번 활성화하지 마세요. A와 B를 동시에 활성화하지 마세요.
+# - 최상위 키(sandbox_mode, approval_policy 등)는 [테이블]보다 위에 둡니다.
+# - 기존 default_permissions 설정과 이 파일의 sandbox_mode 및
+#   [sandbox_workspace_write] 방식을 혼용하지 마세요.
+# - CLI 옵션이나 관리자 정책이 이 설정보다 우선할 수 있습니다.
+# - 이 파일을 작성해도 현재 실행 중인 세션의 권한이 즉시 바뀌지는 않습니다.
+#
+# A. 작업 공간에서 개발하고, 추가 권한이 필요하면 승인 요청
+# sandbox_mode: 명령 실행의 파일 시스템·네트워크 접근 범위입니다.
+# workspace-write는 작업 공간 및 허용된 임시 경로 등에 쓰기를 허용합니다.
+# sandbox_mode = "workspace-write"
+#
+# approval_policy: 에이전트가 추가 권한이 필요하다고 판단하면 요청할 수 있습니다.
+# on-request는 모든 명령을 일일이 승인받는다는 뜻이 아닙니다.
+# approval_policy = "on-request"
+#
+# B. Codex 샌드박스를 해제하고 권한 승인 요청 없이 실행
+# 이 방식을 선택하면 A의 두 설정과 아래 workspace-write 테이블은 주석으로 둡니다.
+# danger-full-access는 Codex의 파일 시스템·네트워크 샌드박스 제한을 해제합니다.
+# 실행 사용자에게 접근 가능한 프로젝트 밖 파일도 읽고 수정할 수 있습니다.
+# OS 사용자 권한, sudo 인증, 컨테이너 제한, 관리자 정책까지 해제하지는 않습니다.
+# sandbox_mode = "danger-full-access"
+#
+# never는 권한 승인 요청을 하지 않습니다. 권한을 스스로 새로 얻는 설정은 아닙니다.
+# danger-full-access와 함께 쓰면 실행 사용자 권한 안에서 승인 요청 없이 진행합니다.
+# approval_policy = "never"
+#
+# A에서 사용하는 세부 설정: A를 선택할 때 아래 테이블과 필요한 항목을 활성화합니다.
+# B에서는 이 테이블을 활성화할 필요가 없습니다.
+# [sandbox_workspace_write]
+#
+# network_access: 샌드박스 안에서 외부 네트워크 연결을 허용합니다.
+# 패키지 다운로드 등에 사용합니다. OS 방화벽이나 컨테이너 제한은 변경하지 않습니다.
+# 로컬 서버 통신·Chromium 실행 가능 여부는 새 세션에서 실제로 확인해야 합니다.
+# network_access = true
+#
+# writable_roots: 작업 공간 외에 쓰기를 허용할 추가 경로의 절대 경로 목록입니다.
+# 필요할 때만 실제 경로를 입력합니다. 빈 배열은 추가 경로를 지정하지 않습니다.
+# writable_roots = []
+#
+# exclude_slash_tmp: false이면 /tmp를 쓰기 허용 대상에서 제외하지 않습니다.
+# 브라우저·테스트의 임시 파일 생성에 사용할 수 있습니다.
+# exclude_slash_tmp = false
+#
+# exclude_tmpdir_env_var: false이면 TMPDIR 환경 변수의 임시 경로를 제외하지 않습니다.
+# exclude_tmpdir_env_var = false
