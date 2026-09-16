@@ -15,12 +15,12 @@
 - canonical 작업 경로: `/project_workspace/fms`
 - 일상 진입 경로: `/project/workspace/fms` (canonical 경로의 심볼릭 링크)
 - 원본 백업: `/home/dyhwang23/workspace/jsearch_rebuild_repo/working_directory/image_search/bg_fms_v1_new_ui`
-- Backlog 데이터와 GitLab 운영 파일은 `/project_management` 아래에서 관리한다.
+- Backlog 데이터와 Forgejo 운영 파일은 `/project_management` 아래에서 관리한다.
 - Backlog 분류: `fms/planning`, `fms/web`, `fms/server`, `fms/robot`.
 - `planning`은 통합 논의·방향성, 나머지는 각 파트의 상세 작업이다. 분류명은 코드 디렉터리명(`web-client`, `server`, `virtual-robot`)을 바꾸지 않는다.
 
 ### Backlog 작업 원칙
 
-대화 시작 시 `/project_management/infrastructure/backlog/backlog-cli instructions overview`를 읽고 현재 작업에 적용한다. 생성 전 `instructions task-creation`, 실행/상태 변경 전 `instructions task-execution`, 완료 전 `instructions task-finalization`을 읽는다. 작업 Markdown은 직접 편집하지 않고 CLI를 사용한다. 낯선 하위 명령은 `--help`로 확인한다. Backlog CLI는 `/project_management/pilot`에서 실행하고, GitLab 연동은 2026-09-16에 별도 진행한다.
+대화 시작 시 `/project_management/infrastructure/backlog/backlog-cli instructions overview`를 읽고 현재 작업에 적용한다. 생성 전 `instructions task-creation`, 실행/상태 변경 전 `instructions task-execution`, 완료 전 `instructions task-finalization`을 읽는다. 작업 Markdown은 직접 편집하지 않고 CLI를 사용한다. 낯선 하위 명령은 `--help`로 확인한다. Backlog CLI는 `/project_management/pilot`에서 실행하고, Git 원격은 Forgejo를 사용한다.
 
 논의 카드만으로 새 기능 구현을 시작하지 않으며 사용자 최신 지시를 우선한다. 논의는 planning에, 구현·검증은 해당 파트에 기록하고 완료한 작업은 검증 결과와 함께 Done으로 옮긴다.
