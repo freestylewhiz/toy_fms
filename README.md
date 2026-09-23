@@ -7,7 +7,7 @@ FMS 테스트 야드는 Bun 기반의 웹 클라이언트, Colyseus/gRPC 서버,
 - 런타임: Bun 1.3.13 이상
 - 패키지 관리자: Bun (bun.lock)
 - 데이터베이스: Bun SQLite (외부 DB 없음)
-- 작업 경로: /project/workspace/fms (/project_workspace/fms의 심볼릭 링크)
+- 기존 운영 서버 경로: /project/workspace/fms (/project_workspace/fms의 심볼릭 링크). 다른 PC는 원하는 위치에 clone한다.
 
 ## 저장소 구성
 - web-client/: 맵 에디터와 정적 파일 서버
@@ -103,6 +103,10 @@ bun run check:driving:web
 
 [문서 목차](docs/README.md)에서 컴포넌트별 현재 구현과 논의 주제를 확인한다.
 
+다른 PC에서 이어서 작업할 때는 [에이전트·칸반 연결 안내](docs/concept/current/agent-workflow.md)를 따른다.
+공유 스킬은 [.agents/skills/fms-kanban](.agents/skills/fms-kanban/SKILL.md)에 포함되어 있으며,
+Codex에서 `$fms-kanban`으로 호출할 수 있다. Vikunja 접속 주소와 사용자별 토큰은 별도로 설정한다.
+
 - [공통 구조](docs/concept/current/architecture.md) · [문서 관리 규칙](docs/concept/current/documentation-policy.md)
 - [FMS 운영·점유 복구](docs/fms/current/runtime-recovery.md) · [트래픽](docs/fms/current/traffic.md)
 - [웹 편집](docs/web/current/editor.md) · [웹 운용](docs/web/current/operations.md)
@@ -124,6 +128,16 @@ mkdir -p docs/{concept,fms,web,robot}/todo
 Backlog.md 서비스와 이관 원본은 2026-09-18에 제거했다.
 
 ## 작업 시작
+
+다른 PC에서는 GitHub를 clone한 디렉터리를 사용한다.
+
+~~~sh
+git clone https://github.com/freestylewhiz/toy_fms.git
+cd toy_fms
+~~~
+
+기존 운영 서버의 진입 경로는 다음과 같다.
+
 ~~~sh
 cd /project/workspace/fms
 ~~~

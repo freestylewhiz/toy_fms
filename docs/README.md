@@ -17,6 +17,7 @@ current에는 구현된 동작과 유지할 정책만 기록한다. backlog는 �
 todo에는 사용자와 범위·완료 기준을 합의한 작업만 둔다. 완료되면 current로 반영하고 todo를 정리한다.
 에이전트별 문서, 핸드오프, 과거 단계별 구현 지시는 관리하지 않는다.
 실행 방법은 [저장소 README](../README.md)를 참고한다.
+다른 PC의 공유 스킬·Vikunja 연결은 [에이전트 작업 환경](concept/current/agent-workflow.md)을 따른다.
 
 텔레포터 상세: [공통 리소스 모델](concept/current/resource-model.md),
 [FMS 점유·순서](fms/current/teleporter.md), [웹 편집](web/current/teleporter.md),

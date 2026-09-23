@@ -1,0 +1,4 @@
+interface:
+  display_name: "FMS 칸반"
+  short_description: "Vikunja 카드·진행 상태·검수와 FMS 문서 연결을 관리"
+  default_prompt: "$fms-kanban으로 현재 FMS 카드를 확인하고 합의된 작업 상태와 문서를 정리해줘."

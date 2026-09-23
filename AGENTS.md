@@ -1,6 +1,15 @@
 # 작업 지침
 
-@/home/dyhwang23/.codex/RTK.md
+## 다른 PC와 공유 스킬
+
+체크아웃 위치는 자유롭다. 현재 저장소 루트는 `git rev-parse --show-toplevel`로 확인한다.
+아래 운영 서버 경로를 새 PC의 필수 경로로 사용하지 않는다.
+
+칸반 카드 조회·등록·수정·상태 갱신에는 저장소의
+[fms-kanban 스킬](.agents/skills/fms-kanban/SKILL.md)을 읽는다.
+새 PC 연결·인증은 [에이전트 작업 환경](docs/concept/current/agent-workflow.md)을 따른다.
+스킬과 공통 지침은 Git으로 공유하며 개인 토큰, `.env.*.local`, `.codex/config.toml`은 공유하지 않는다.
+RTK가 있으면 실행 명령에 `rtk`를 붙인다. RTK가 없는 PC에서는 원래 명령을 사용한다.
 
 ## 문서 구조와 지속적인 컨텍스트
 
@@ -59,6 +68,9 @@ Vikunja의 논의 카드가 To Do 상태여도 docs/todo로 자동 승격하지 
 - 심층 논의 문서는 `DISC-NNN-영문주제.md`로 식별한다. `DISC`는 논의 분류, 숫자는 중복 없는 문서 ID이며 카드 ID와 별개다.
   첫 문서는 `docs/concept/backlog/DISC-001-teleporter-queue-management.md`다. 이동·이름 변경 시에도 코드는 유지한다.
 
-Vikunja는 `http://192.168.0.172:3456`에서 운영한다. 카드·상태·라벨·첨부 변경은 Vikunja UI 또는 REST API로 수행한다. API 토큰과 MCP 토큰은 사용자별 최소 권한으로 만들고, 비밀값을 카드·저장소·출력에 기록하지 않는다. Backlog.md 서비스와 이관 원본은 2026-09-18에 제거했으며, Git 원격은 Forgejo를 사용한다.
+Vikunja는 `http://192.168.0.172:3456`에서 운영한다. 다른 PC의 접속 주소는 `VIKUNJA_URL`로 지정한다.
+카드·상태·라벨·첨부 변경은 Vikunja UI 또는 REST API로 수행한다. API 토큰과 MCP 토큰은 사용자별 최소 권한으로 만들고, 비밀값을 카드·저장소·출력에 기록하지 않는다. Backlog.md 서비스와 이관 원본은 2026-09-18에 제거했다.
+기존 서버의 `origin`은 Forgejo, `github`은 GitHub 공유 원격이다. GitHub에서 새로 clone하면
+`origin`이 GitHub이므로 원격 이름을 가정하지 말고 `git remote -v`로 실제 대상을 확인한다.
 
 논의 카드만으로 새 기능 구현을 시작하지 않으며 사용자 최신 지시를 우선한다. 논의는 planning에, 구현·검증은 해당 파트에 기록한다. 구현·검증 결과는 Review에서 사용자 검토를 거친 뒤 Done으로 확정한다.

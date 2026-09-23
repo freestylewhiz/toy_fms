@@ -23,6 +23,7 @@ coverage/
 .env.*
 !.env.example
 !.env.template
+!.env.vikunja.example
 /.codex/
 /.idea/
 /.vscode/
@@ -42,3 +43,5 @@ Thumbs.db
 *.swp
 *.swo
 *~
+__pycache__/
+*.py[cod]
