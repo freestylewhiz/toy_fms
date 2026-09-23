@@ -1,4 +1,5 @@
 import { icon } from './icons.ts';
+import { EVENT_CATEGORIES, EVENT_LEVELS } from '../../shared/config/events.ts';
 
 /** Workspace chrome. The editor keeps ownership of resource data and commands. */
 export function mountWorkspace(): void {
@@ -46,6 +47,7 @@ export function mountWorkspace(): void {
     <div class="project-card"><div class="project-art"><img id="project-map-image" src="/resources/maps/yard.png" alt="현재 맵 미리보기"/><span class="project-orbit"></span><span class="project-coordinate">SPATIAL WORKSPACE</span></div>
     <details class="map-library-drawer"><summary><span><b id="library-map-name">Yard</b><small id="library-map-size">80 × 60 m</small></span><span class="map-switch-hint">맵 전환 ⌄</span></summary>
     <div class="map-library">
+      <button class="map-card" data-map-target="large_lab" type="button" aria-pressed="false"><img src="/resources/maps/large_lab.preview.png" alt=""/><span><b>Large Lab</b><small>500 × 500 m · 편집</small></span></button>
       <button class="map-card" data-map-target="yard" type="button" aria-pressed="true"><img src="/resources/maps/yard.png" alt=""/><span><b>Yard</b><small>80 × 60 m · 편집</small></span></button>
       <button class="map-card" data-map-target="1st_floor" type="button" aria-pressed="false"><img src="/resources/maps/1st_floor.png" alt=""/><span><b>1st Floor</b><small>36 × 28 m · 미리보기</small></span></button>
     </div></details></div>
@@ -79,8 +81,34 @@ export function mountWorkspace(): void {
   runtime.dataset.detailPanel = 'fleet';
   runtime.innerHTML = `<div class="runtime-heading"><span class="panel-kicker">RUNTIME</span><span id="runtime-sync" aria-live="polite"></span></div>
     <div id="runtime-robot-detail" class="runtime-robot-detail"><span class="runtime-empty">로봇을 선택하면 런타임 상태와 제어를 표시합니다.</span></div>
+    <section id="operator-motion-controls" class="operator-motion-controls" aria-label="로봇 주행 일시정지·재개">
+      <div class="runtime-subheading"><b>주행 일시정지</b><button type="button" id="robot-events-open" class="text-button">이벤트 콘솔</button></div>
+      <div id="robot-pause-selection" class="robot-pause-selection"></div>
+      <div class="operator-motion-actions"><button type="button" id="robot-motion-pause" class="secondary">일시정지</button><button type="button" id="robot-motion-resume" class="primary">재개</button></div>
+      <p id="robot-motion-result" class="runtime-control-note" aria-live="polite">선택한 로봇의 주행만 멈춥니다. 운영 제외·교통 정지와 별개입니다.</p>
+    </section>
     <div class="runtime-subheading"><b>구역 리소스</b><span>점유 · 예약 · 대기</span></div>
-    <div id="runtime-occupancies" class="runtime-occupancies"><span class="runtime-empty">런타임 점유 정보가 없습니다.</span></div>`;
+    <div id="runtime-occupancies" class="runtime-occupancies"><span class="runtime-empty">런타임 점유 정보가 없습니다.</span></div>
+    <section id="blackbox-management" class="blackbox-management" aria-label="블랙박스 기록 관리">
+      <div class="runtime-subheading"><b>기록 관리</b><span>전체 맵·로봇 기록</span></div>
+      <button type="button" id="blackbox-clear" class="danger">전체 블랙박스 기록 삭제</button>
+      <p id="blackbox-clear-status" class="runtime-control-note" aria-live="polite">운용 상태와 로봇 위치는 변경하지 않습니다.</p>
+    </section>
+    <section id="robot-events-panel" class="robot-events-panel" hidden aria-label="로봇 이벤트 콘솔">
+      <div class="robot-events-head"><div><span class="panel-kicker">ROBOT EVENT CONSOLE</span><b id="robot-events-title">로봇 이벤트</b></div><button type="button" id="robot-events-close" class="text-button">닫기</button></div>
+      <div class="robot-events-filters">
+        <label>로봇 <select id="robot-events-robot"><option value="">선택 로봇</option></select></label>
+        <label>기간 <select id="robot-events-range"><option value="900000">15분</option><option value="3600000">1시간</option><option value="86400000" selected>24시간</option></select></label>
+        <label>수준 <select id="robot-events-level"><option value="">전체</option>${EVENT_LEVELS.options.map(option => `<option value="${option.value}">${option.label}</option>`).join('')}</select></label>
+        <label>종류 <select id="robot-events-category"><option value="">전체</option>${EVENT_CATEGORIES.options.map(option => `<option value="${option.value}">${option.label}</option>`).join('')}</select></label>
+      </div>
+      <div class="robot-events-toolbar"><label class="check"><input type="checkbox" id="robot-events-follow" checked /> 실시간 따라가기</label><span id="robot-events-status" aria-live="polite">대기 중</span></div>
+      <div id="robot-events-list" class="robot-events-list" role="log" aria-live="polite"></div>
+      <div class="robot-events-footer"><button type="button" id="robot-events-more" class="secondary">이전 이벤트 더 보기</button><button type="button" id="robot-events-trace" class="secondary" disabled>관련 기록</button></div>
+      <div id="robot-events-description" class="robot-events-description" hidden></div>
+      <div id="robot-events-related" class="robot-events-related" hidden></div>
+      <details id="robot-events-json" class="robot-events-json" hidden><summary>JSON 원문 보기</summary><button type="button" id="robot-events-copy" class="secondary" disabled>JSON 복사</button><pre id="robot-events-detail" class="robot-events-detail"></pre></details>
+    </section>`;
   inspector.append(runtime);
   const heading = get('.inspector-section .section-heading');
   heading.className = 'inspector-heading';

@@ -10,7 +10,7 @@ export function fitCamera(viewW: number, viewH: number, mapW: number, mapH: numb
 }
 
 export function clampScale(s: number): number {
-  return Math.min(8, Math.max(0.12, s));
+  return Math.min(8, Math.max(0.005, s));
 }
 
 export function screenToWorld(cam: Camera, sx: number, sy: number): { x: number; y: number } {

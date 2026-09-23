@@ -1,4 +1,4 @@
-import { PIXEL_CM } from "../../shared/constants.ts";
+import { canonicalRobotId, PIXEL_CM } from "../../shared/constants.ts";
 import { squareVerts, triangleVerts, type DynObstacle } from "../../shared/obstacles.ts";
 import {
   centroid,
@@ -7,6 +7,7 @@ import {
   pointInLabel,
 } from "../../shared/polygon.ts";
 import type { Point } from "../../shared/semantic.ts";
+import { EditHandles, ConnectionStates, DriveStates, FmsControlStates, NavigationModes, ObstacleKinds, TeleporterUseStates, WorkStates, ZoneKinds, type ObstacleKind } from "../../shared/config/index.ts";
 import { dist, distToSeg, metersToPx, pointInPoly, type EdgeR, type Snapshot } from "./snapshot.ts";
 
 export const ZONE_FILL: Record<string, string> = {
@@ -30,13 +31,15 @@ export const ZONE_FILL: Record<string, string> = {
 const OBS_FILL = "rgba(244, 114, 182, 0.38)";
 const OBS_STROKE = "#f472b6";
 const ROBOT_COLOR: Record<string, string> = { "robot-1": "#fb923c", "robot-2": "#34d399" };
-const WORK_LABEL: Record<string, string> = { idle: "유휴", busy: "작업", unknown: "확인 불가" };
-const DRIVE_LABEL: Record<string, string> = { stationary: "정지", moving: "주행 중", waiting: "대기", paused: "일시정지", blocked: "주행 불가", unknown: "상태 확인 중" };
+const workLabel = (value: string) => WorkStates.is(value) ? WorkStates.labels[value] : "확인 불가";
+const driveLabel = (value: string) => DriveStates.is(value) ? DriveStates.labels[value] : "상태 확인 중";
+const controlLabel = (value: string) => FmsControlStates.is(value) ? FmsControlStates.labels[value] : value;
+const navigationLabel = (value: string) => NavigationModes.is(value) ? NavigationModes.labels[value] : "주행 방식 확인 중";
 
 function drawRobotRuntime(ctx: CanvasRenderingContext2D, r: Snapshot["robots"][number], selected: boolean, px = 1): void {
-  const offline = r.connectionState === "offline";
-  const disabled = r.fmsControlState === "disabled";
-  const color = disabled ? "#fbbf24" : offline ? "#fb7185" : ROBOT_COLOR[r.id] ?? "#a3e635";
+  const offline = r.connectionState === ConnectionStates.code.offline;
+  const disabled = r.fmsControlState === FmsControlStates.code.disabled;
+  const color = disabled ? "#fbbf24" : offline ? "#fb7185" : ROBOT_COLOR[canonicalRobotId(r.id)] ?? "#a3e635";
   ctx.save();
   ctx.strokeStyle = color;
   ctx.lineWidth = (selected ? 2.4 : 1.5) * px;
@@ -44,11 +47,12 @@ function drawRobotRuntime(ctx: CanvasRenderingContext2D, r: Snapshot["robots"][n
   ctx.beginPath(); ctx.arc(r.x, r.y, Math.max(15, 10 * px), 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
   ctx.fillStyle = color; ctx.font = `bold ${11 * px}px ui-monospace, monospace`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.fillText(disabled ? "⊘" : offline ? "!" : "●", r.x, r.y - Math.max(24, 19 * px));
-  const work = WORK_LABEL[r.workState] ?? "확인 불가";
-  const drive = DRIVE_LABEL[r.driveState] ?? "상태 확인 중";
+  const work = workLabel(r.workState);
+  const drive = driveLabel(r.driveState);
+  const identity = `${r.name || r.id}_${controlLabel(r.fmsControlState)}_${driveLabel(r.driveState)}_${navigationLabel(r.navigationMode)}`;
   ctx.font = `${10 * px}px ui-monospace, monospace`;
   ctx.fillStyle = "rgba(7, 11, 20, .82)";
-  const label = `${work} · ${drive}`; const width = ctx.measureText(label).width + 8 * px;
+  const label = identity; const width = ctx.measureText(label).width + 8 * px;
   ctx.fillRect(r.x - width / 2, r.y + Math.max(18, 14 * px), width, 16 * px);
   ctx.fillStyle = "#e2e8f0"; ctx.fillText(label, r.x, r.y + Math.max(18, 14 * px) + 8 * px);
   ctx.restore();
@@ -72,13 +76,13 @@ function drawObstacle(ctx: CanvasRenderingContext2D, o: DynObstacle): void {
   ctx.fillStyle = OBS_FILL;
   ctx.strokeStyle = OBS_STROKE;
   ctx.lineWidth = 1.5;
-  if (o.kind === "circle") {
+  if (o.kind === ObstacleKinds.code.circle) {
     ctx.beginPath();
     ctx.arc(o.x, o.y, o.size, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   } else {
-    const verts = o.kind === "triangle" ? triangleVerts(o) : squareVerts(o);
+    const verts = o.kind === ObstacleKinds.code.triangle ? triangleVerts(o) : squareVerts(o);
     ctx.beginPath();
     ctx.moveTo(verts[0][0], verts[0][1]);
     for (let i = 1; i < verts.length; i++) ctx.lineTo(verts[i][0], verts[i][1]);
@@ -91,7 +95,8 @@ function drawObstacle(ctx: CanvasRenderingContext2D, o: DynObstacle): void {
 
 function drawHeading(ctx: CanvasRenderingContext2D, x: number, y: number, theta: number, color: string, len = 18): void {
   ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
+  // Keep headings visible when a large map is zoomed far out.
+  ctx.lineWidth = Math.max(2, 2 * len / 18);
   ctx.beginPath();
   ctx.moveTo(x, y);
   ctx.lineTo(x + Math.cos(theta) * len, y + Math.sin(theta) * len);
@@ -148,7 +153,7 @@ export function drawPoseEditor(
   ctx: CanvasRenderingContext2D,
   pose: { x: number; y: number; theta: number; size?: number },
   px: number,
-  opts?: { obstacle?: boolean; shape?: "triangle" | "square" | "circle" },
+  opts?: { obstacle?: boolean; shape?: ObstacleKind },
 ): void {
   const r = POSE_ROTATE_R;
   ctx.save();
@@ -189,15 +194,15 @@ export function drawPoseEditor(
     ctx.strokeStyle = "rgba(244, 114, 182, 0.9)";
     ctx.fillStyle = "rgba(244, 114, 182, 0.25)";
     ctx.lineWidth = 1.5 * px;
-    if (opts.shape === "circle") {
+    if (opts.shape === ObstacleKinds.code.circle) {
       ctx.beginPath();
       ctx.arc(pose.x, pose.y, pose.size, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     } else {
-      const verts = opts.shape === "triangle"
-        ? triangleVerts({ ...pose, size: pose.size, kind: "triangle", id: "draft" })
-        : squareVerts({ ...pose, size: pose.size, kind: "square", id: "draft" });
+      const verts = opts.shape === ObstacleKinds.code.triangle
+        ? triangleVerts({ ...pose, size: pose.size, kind: ObstacleKinds.code.triangle, id: "draft" })
+        : squareVerts({ ...pose, size: pose.size, kind: ObstacleKinds.code.square, id: "draft" });
       ctx.beginPath();
       ctx.moveTo(verts[0][0], verts[0][1]);
       for (let i = 1; i < verts.length; i++) ctx.lineTo(verts[i][0], verts[i][1]);
@@ -214,11 +219,11 @@ export function hitPoseEditor(
   x: number,
   y: number,
   px: number,
-): "rotate" | "body" | null {
+): typeof EditHandles.code.rotate | typeof EditHandles.code.body | null {
   const hx = pose.x + Math.cos(pose.theta) * POSE_ROTATE_R;
   const hy = pose.y + Math.sin(pose.theta) * POSE_ROTATE_R;
-  if (dist(x, y, hx, hy) <= 10 * px) return "rotate";
-  if (dist(x, y, pose.x, pose.y) <= 14 * px) return "body";
+  if (dist(x, y, hx, hy) <= 10 * px) return EditHandles.code.rotate;
+  if (dist(x, y, pose.x, pose.y) <= 14 * px) return EditHandles.code.body;
   return null;
 }
 
@@ -240,7 +245,7 @@ export function drawWorld(
   opts: DrawOpts,
 ): void {
   ctx.drawImage(images.map, 0, 0, opts.mapWidth, opts.mapHeight);
-  if (images.occ) ctx.drawImage(images.occ, 0, 0);
+  if (images.occ) ctx.drawImage(images.occ, 0, 0, opts.mapWidth, opts.mapHeight);
 
   if (opts.dimOthers) {
     ctx.fillStyle = "rgba(7, 11, 20, 0.42)";
@@ -271,6 +276,7 @@ export function drawWorld(
       drawZoneLabel(ctx, poly, zoneLabel(z), z.id === opts.selectedId, opts.px ?? 1);
       if (z.id === opts.selectedId || (opts.zonePreview?.id === z.id)) {
         drawZoneHandles(ctx, poly, opts.selectedVertex, opts.px ?? 1);
+        drawSoftZoneGuidance(ctx, poly, z.kind, opts.px ?? 1);
       }
     }
   }
@@ -327,6 +333,34 @@ export function drawWorld(
     ctx.lineTo(p.bx, p.by);
     ctx.stroke();
   }
+  for (const t of snap.teleporters) {
+    for (const ep of t.endpoints) {
+      const mapId = ep.mapId ?? (ep as any).map_id;
+      const x = ep.x ?? (ep as any).position?.x;
+      const y = ep.y ?? (ep as any).position?.y;
+      if (mapId !== snap.mapId || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const rawPolygon = ep.occupancyPolygon?.length ? ep.occupancyPolygon : (ep as any).occupancy_polygon ?? [];
+      const polygon = rawPolygon.map((p: Point) => ({ x: p.x + x, y: p.y + y }));
+      const selected = t.id === opts.selectedId;
+      // Large Lab is 10,000 px wide and is displayed zoomed far out. Keep the
+      // endpoint marker and heading screen-readable without changing the
+      // stored occupancy geometry.
+      const markerPx = opts.px ?? 1;
+      if (polygon.length >= 3) drawPoly(ctx, polygon, selected ? "rgba(56,189,248,.22)" : "rgba(56,189,248,.12)", selected ? "#e0f2fe" : "rgba(56,189,248,.72)", selected ? 2.5 : 1.5);
+      ctx.save();
+      ctx.fillStyle = ep.occupancyState === TeleporterUseStates.code.occupied ? "#fb7185" : ep.occupancyState === TeleporterUseStates.code.reserved ? "#fbbf24" : "#67e8f9";
+      ctx.beginPath(); ctx.arc(x, y, (selected ? 8 : 6) * markerPx, 0, Math.PI * 2); ctx.fill();
+      const entry = ep.entryTheta ?? (ep as any).entry_theta ?? 0;
+      const exit = ep.exitTheta ?? (ep as any).exit_theta ?? 0;
+      drawHeading(ctx, x, y, entry, "#fef3c7", 22 * markerPx);
+      drawHeading(ctx, x, y, exit, "#bae6fd", 17 * markerPx);
+      ctx.font = `bold ${Math.max(8, 8 * markerPx)}px ui-monospace, monospace`; ctx.textAlign = "center"; ctx.fillStyle = "#e0f2fe";
+      const occupancyStateLabel = ep.occupancyState && TeleporterUseStates.is(ep.occupancyState) ? TeleporterUseStates.labels[ep.occupancyState] : ep.occupancyState;
+      const occupancyLabel = ep.occupancyState && ep.occupancyState !== "free" ? `${occupancyStateLabel}${ep.occupancyRobotId ? ` · ${ep.occupancyRobotId}` : ""}` : "free";
+      ctx.fillText(`↳ ${occupancyLabel}`, x, y - 12);
+      ctx.restore();
+    }
+  }
 
   if (opts.layers.scene) {
     for (const o of snap.obstacles) {
@@ -376,13 +410,13 @@ export function drawWorld(
         ctx.beginPath();
         ctx.moveTo(r.path[0].x, r.path[0].y);
         for (let i = 1; i < r.path.length; i++) ctx.lineTo(r.path[i].x, r.path[i].y);
-        ctx.strokeStyle = ROBOT_COLOR[r.id] ?? "#94a3b8";
+        ctx.strokeStyle = ROBOT_COLOR[canonicalRobotId(r.id)] ?? "#94a3b8";
         ctx.lineWidth = 2;
         ctx.setLineDash([5, 4]);
         ctx.stroke();
         ctx.setLineDash([]);
       }
-      const img = images.robots[r.id];
+      const img = images.robots[canonicalRobotId(r.id)];
       if (img) drawIcon(ctx, img, r.x, r.y, r.theta, 20, r.id === opts.selectedId);
       drawRobotRuntime(ctx, r, r.id === opts.selectedId, opts.px ?? 1);
     }
@@ -427,7 +461,7 @@ export function drawWorld(
 }
 
 function zoneLabel(z: { name?: string; kind: string }): string {
-  const name = z.name?.trim() || z.kind;
+  const name = z.name?.trim() || (ZoneKinds.is(z.kind) ? ZoneKinds.labels[z.kind] : z.kind);
   return name.length > 24 ? name.slice(0, 23) + '…' : name;
 }
 
@@ -459,6 +493,30 @@ function drawZoneLabel(ctx: CanvasRenderingContext2D, poly: Point[], kind: strin
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(kind, c.x, c.y);
+  ctx.restore();
+}
+
+function drawSoftZoneGuidance(ctx: CanvasRenderingContext2D, poly: Point[], kind: string, px: number): void {
+  if ((kind !== "prefer" && kind !== "avoid") || poly.length < 3) return;
+  const center = centroid(poly);
+  ctx.save();
+  ctx.lineWidth = 1.5 * px;
+  ctx.strokeStyle = kind === "prefer" ? "rgba(52,211,153,.9)" : "rgba(251,191,36,.9)";
+  ctx.fillStyle = ctx.strokeStyle;
+  if (kind === "prefer") {
+    ctx.setLineDash([5 * px, 4 * px]);
+    ctx.beginPath(); ctx.arc(center.x, center.y, 7 * px, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(center.x - 3 * px, center.y); ctx.lineTo(center.x + 3 * px, center.y); ctx.moveTo(center.x, center.y - 3 * px); ctx.lineTo(center.x, center.y + 3 * px); ctx.stroke();
+  } else {
+    ctx.setLineDash([3 * px, 4 * px]);
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const edge = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      ctx.beginPath(); ctx.moveTo(edge.x, edge.y); ctx.lineTo(edge.x + (center.x - edge.x) * .28, edge.y + (center.y - edge.y) * .28); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
   ctx.restore();
 }
 
@@ -547,13 +605,17 @@ export type Hit =
   | { kind: string; id: string }
   | null;
 
-export function hitTest(snap: Snapshot, x: number, y: number): Hit {
+export function hitTest(snap: Snapshot, x: number, y: number, teleporterRadius = 16): Hit {
   for (const r of snap.robots) if (nearPoint(x, y, r.x, r.y, 12)) return { kind: "robot", id: r.id };
   for (const n of snap.nodes) if (nearPoint(x, y, n.x, n.y, 10)) return { kind: "node", id: n.id };
   for (const s of snap.stations) if (nearPoint(x, y, s.x, s.y, 12)) return { kind: "station", id: s.id };
   for (const w of snap.waypoints) if (nearPoint(x, y, w.x, w.y, 13)) return { kind: "waypoint", id: w.id };
   for (const c of snap.chargers) if (nearPoint(x, y, c.x, c.y, 13)) return { kind: "charger", id: c.id };
   for (const o of snap.obstacles) if (nearPoint(x, y, o.x, o.y, o.size + 2)) return { kind: "obstacle", id: o.id };
+  for (const t of snap.teleporters) for (const ep of t.endpoints) {
+    const ex = ep.x ?? (ep as any).position?.x, ey = ep.y ?? (ep as any).position?.y;
+    if (ep.mapId === snap.mapId && Number.isFinite(ex) && Number.isFinite(ey) && nearPoint(x, y, ex, ey, teleporterRadius)) return { kind: "teleporter", id: t.id };
+  }
   for (const p of snap.portals) {
     if (distToSeg(x, y, p.ax, p.ay, p.bx, p.by) < 6) return { kind: "portal", id: p.id };
   }

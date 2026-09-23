@@ -3,11 +3,13 @@ import type { Snapshot } from './snapshot.ts';
 
 /** The display palette changes; occupancy and editor coordinates remain untouched. */
 export function createBlueprint(grid: Uint8Array, width: number, height: number): HTMLCanvasElement {
-  const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+  const step = Math.max(1, Math.ceil(Math.max(width, height) / 2048));
+  const w = Math.ceil(width / step), h = Math.ceil(height / step);
+  const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext('2d')!;
-  const pixels = ctx.createImageData(width, height);
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const at = y * width + x, i = at * 4;
+  const pixels = ctx.createImageData(w, h);
+  for (let py = 0; py < h; py++) for (let px = 0; px < w; px++) {
+    const x=px*step, y=py*step, at = y * width + x, i = (py*w+px) * 4;
     const free = grid[at] === 1;
     const edge = free && (x === 0 || y === 0 || x === width - 1 || y === height - 1 || !grid[at - 1] || !grid[at + 1] || !grid[at - width] || !grid[at + width]);
     const minor = free && (x % 100 === 0 || y % 100 === 0);

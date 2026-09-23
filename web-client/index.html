@@ -20,6 +20,7 @@
           <span class="context-label">MAP</span>
           <select id="map-select" aria-label="맵 선택">
             <option value="yard">yard</option>
+            <option value="large_lab">Large Lab · 10000 × 10000</option>
             <option value="1st_floor">1st floor</option>
           </select>
           <strong id="map-context-id">yard</strong>
@@ -33,6 +34,7 @@
         <button type="button" data-mode="vda" aria-pressed="false"><span class="mode-index">03</span><span><b>VDA 배치</b><small>semantic graph</small></span></button>
       </nav>
       <div class="top-meta">
+        <button type="button" id="blackbox-toggle" class="blackbox-toggle" aria-pressed="false" disabled>블랙박스</button>
         <div class="conn" id="conn" data-state="offline">
           <span class="dot"></span>
           <span id="conn-label">offline</span>
@@ -80,6 +82,28 @@
           <div class="hud-mode" id="hud-mode">운용 · robot control</div>
         </div>
         <canvas id="map" role="img" aria-label="yard map"></canvas>
+        <section id="blackbox-panel" class="blackbox-panel" hidden aria-label="블랙박스 리플레이">
+          <div class="blackbox-panel-head">
+            <div><span class="panel-kicker">BLACKBOX CHANNEL</span><strong id="blackbox-title">최근 24시간 운용 영향 이벤트</strong></div>
+            <span id="blackbox-clock" class="mono">—</span>
+          </div>
+          <div class="blackbox-timeline-wrap">
+            <div id="blackbox-markers" class="blackbox-markers" aria-hidden="true"></div>
+            <div class="blackbox-range-track"><input id="blackbox-start-range" type="range" min="0" max="0" value="0" aria-label="리플레이 시작 이벤트"/><input id="blackbox-end-range" type="range" min="0" max="0" value="0" aria-label="리플레이 끝 이벤트"/></div>
+          </div>
+          <div class="blackbox-controls">
+            <label>시작 <select id="blackbox-start-event" aria-label="시작 이벤트"><option value="">이벤트 없음</option></select></label>
+            <label>끝 <select id="blackbox-end-event" aria-label="끝 이벤트"><option value="">이벤트 없음</option></select></label>
+            <button type="button" id="blackbox-more">더 보기</button>
+            <button type="button" id="blackbox-load" class="primary">구간 열기</button>
+            <button type="button" id="blackbox-step-back">이전</button>
+            <button type="button" id="blackbox-play">재생</button>
+            <button type="button" id="blackbox-step-forward">다음</button>
+            <label>배속 <select id="blackbox-speed" aria-label="리플레이 배속"><option value="0.25">0.25×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+          </div>
+          <label class="blackbox-seek-label">재생 위치 <input id="blackbox-seek" type="range" min="0" max="0" value="0" disabled aria-label="블랙박스 재생 시각"/></label>
+          <div id="blackbox-event-detail" class="blackbox-event-detail" aria-live="polite">최근 24시간 이벤트를 불러오는 중…</div>
+        </section>
         <div id="occ-legend" class="occ-legend" hidden>
           <div class="occ-legend-title" id="occ-legend-title">Occupancy</div>
           <div class="occ-legend-row"><i class="swatch free"></i> free</div>
@@ -200,6 +224,7 @@
               <input id="insp-right" type="number" required step="0.05" min="0" />
             </label>
             <div id="resource-fields"></div>
+            <div id="zone-guidance" class="zone-guidance" hidden aria-live="polite"></div>
             <details id="resource-geometry" class="geometry-summary" open><summary>형상 및 연결 정보</summary><div id="geometry-content"></div></details>
             <p id="property-state" class="property-state" aria-live="polite">저장된 리소스</p>
             <div class="inspector-actions"><button type="button" id="btn-delete" class="danger" hidden>삭제</button><button type="button" id="btn-properties-cancel">취소</button><button type="button" id="btn-properties-save" class="primary">변경 저장</button></div>

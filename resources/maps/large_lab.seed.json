@@ -1,0 +1,54 @@
+{
+  "waypoints": [
+    {
+      "id": "q1-center",
+      "x": 8000,
+      "y": 2000,
+      "theta": 0
+    },
+    {
+      "id": "q2-center",
+      "x": 2000,
+      "y": 2000,
+      "theta": 0
+    },
+    {
+      "id": "q3-center",
+      "x": 2000,
+      "y": 8000,
+      "theta": 0
+    },
+    {
+      "id": "q4-center",
+      "x": 8000,
+      "y": 8000,
+      "theta": 0
+    }
+  ],
+  "chargingStations": [
+    {
+      "id": "large-charger",
+      "x": 6600,
+      "y": 6500,
+      "theta": 0
+    }
+  ],
+  "robots": [
+    {
+      "id": "robot-1",
+      "x": 6500,
+      "y": 6500,
+      "theta": 0,
+      "status": "idle",
+      "sprite": "robot.png"
+    },
+    {
+      "id": "robot-2",
+      "x": 6500,
+      "y": 6600,
+      "theta": 0,
+      "status": "idle",
+      "sprite": "robot-2.png"
+    }
+  ]
+}

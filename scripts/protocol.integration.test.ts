@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import * as protoLoader from "../server/node_modules/@grpc/proto-loader/build/src/index.js";
 import { Encoder, Decoder } from "../server/node_modules/@colyseus/schema/build/esm/index.mjs";
 import { FloorRoom } from "../server/src/rooms/FloorRoom.ts";
-import { FloorState } from "../server/src/schema.ts";
+import { FloorState, Waypoint } from "../server/src/schema.ts";
 import { attachRobotSession, tickRobotSessions } from "../server/src/grpc/robotBridge.ts";
 import { snapshotFromState } from "../web-client/src/snapshot.ts";
 import { PROTOCOL_VERSION, SESSION_TIMEOUT_MS } from "../shared/robotProtocol.ts";
@@ -13,11 +13,22 @@ import { LocalPlanExecutor } from "../virtual-robot/src/traffic/LocalPlanExecuto
 import { clearSemanticZones } from "../shared/planner.ts";
 import { setExtraBlocked } from "../shared/occupancy.ts";
 import { RuntimeStore } from "../server/src/runtimeStore.ts";
+import { TeleporterStore } from "../server/src/teleporterStore.ts";
+import { defaultTeleporterOccupancyPolygon } from "../shared/teleporterRuntime.ts";
 
 const definition = protoLoader.loadSync(new URL("../proto/robot.proto", import.meta.url).pathname, {
   keepCase: true, oneofs: true, defaults: true, longs: String, enums: String,
 });
 const wire = (definition["bgfms.RobotBridge"] as any).Session;
+
+test("drive diagnostic context preserves target names and is optional on the wire", () => {
+  const drive = { command_id: "display-1", kind: "move", x: 0, y: 2, theta: 0.9,
+    event_context_json: JSON.stringify({ target: { id: "wp-1", kind: "waypoint", name: "포장 출구", mapId: "yard" } }) };
+  expect(wire.responseDeserialize(wire.responseSerialize({ drive })).drive.event_context_json).toBe(drive.event_context_json);
+  const legacy = wire.responseDeserialize(wire.responseSerialize({ drive: { command_id: "legacy", kind: "move", x: 1, y: 2, theta: 0 } }));
+  expect(legacy.drive.event_context_json).toBe("");
+  expect(legacy.drive.x).toBe(1);
+});
 
 class RobotStream extends EventEmitter {
   destroyed = false;
@@ -64,6 +75,88 @@ function fixture() {
     close() { stream.end(); room.onDispose(); room.clock.stop(); },
   };
 }
+
+test("FMS sends the authoritative waypoint name with a drive and preserves its recorded snapshot", () => {
+  const f = fixture();
+  try {
+    const waypoint = Object.assign(new Waypoint(), { id: "event-target", name: "포장 출구", x: 280, y: 520, theta: 0 });
+    f.room.state.waypoints.set(waypoint.id, waypoint);
+    f.stream.receive({ register: { robot_id: "robot-1", protocol_version: PROTOCOL_VERSION } });
+    f.stream.receive({ pose: { robot_id: "robot-1", x: 240, y: 520, theta: 0, status: "idle", motion: "IDLE" } });
+    const ready = f.stream.messages.findLast(m => m.payload === "session_ready").session_ready;
+    f.stream.receive({ control_ack: { robot_id: "robot-1", session_id: ready.session_id, control_epoch: ready.control_epoch, enabled: true, ready: true } });
+    const errors: unknown[] = [];
+    (f.room as any).commandRobot({ send: (type: string, payload: unknown) => { if (type === "error") errors.push(payload); } },
+      { robotId: "robot-1", kind: "move", targetId: waypoint.id, target: { name: "untrusted client name" } });
+    expect(errors).toEqual([]);
+    const drive = f.stream.messages.findLast(m => m.payload === "drive").drive;
+    waypoint.name = "새 이름";
+    expect(JSON.parse(drive.event_context_json)).toMatchObject({ commandKind: "move", x: 280, y: 520, theta: 0,
+      target: { id: "event-target", name: "포장 출구", kind: "waypoint", mapId: "yard" } });
+  } finally { f.close(); }
+});
+
+test("pose override requires request-applied ACK followed by a new pose, never matching old coordinates alone", () => {
+  const f = fixture();
+  const replies: any[] = [];
+  const operator = { sessionId: "pose-ack-test", send: (type: string, value: any) => replies.push({ type, value }) };
+  try {
+    f.stream.receive({ register: { robot_id: "robot-1", protocol_version: PROTOCOL_VERSION, supports_pose_override: true } });
+    const ready = f.stream.messages.findLast(m => m.payload === "session_ready").session_ready;
+    f.stream.receive({ pose: { robot_id: "robot-1", x: 240, y: 520, theta: 0, status: "idle", motion: "IDLE" } });
+    f.stream.receive({ control_ack: { robot_id: "robot-1", session_id: ready.session_id, control_epoch: ready.control_epoch, enabled: true, ready: true } });
+    (f.room as any).overrideRobotPose(operator, { testOnly: true, mapId: "yard", robotId: "robot-1", requestId: "same-position", expectedEpoch: f.room.state.robots.get("robot-1")!.controlEpoch, x: 240, y: 520, theta: 0 });
+    const override = f.stream.messages.findLast(m => m.payload === "pose_override").pose_override;
+    const pose = { robot_id: "robot-1", session_id: override.session_id, control_epoch: override.control_epoch,
+      x: 240, y: 520, theta: 0, work_state: "idle", drive_state: "stationary", status: "idle", reported_at: Date.now() };
+    f.stream.receive({ pose });
+    expect(replies).toHaveLength(0);
+    f.stream.receive({ pose_override_ack: { robot_id: "robot-1", request_id: "other-request", session_id: override.session_id, control_epoch: override.control_epoch, applied: true } });
+    f.stream.receive({ pose });
+    expect(replies).toHaveLength(0);
+    f.stream.receive({ pose_override_ack: { robot_id: "robot-1", request_id: "same-position", session_id: override.session_id, control_epoch: override.control_epoch, applied: true, reason_code: "applied" } });
+    expect(replies).toHaveLength(0);
+    f.stream.receive({ pose });
+    expect(replies.at(-1)?.value.accepted).toBe(true);
+    expect(f.room.state.robots.get("robot-1")!.fmsControlState).toBe("disabled");
+  } finally { f.close(); }
+});
+
+test("pose override local rejection cannot be confirmed by matching coordinates", () => {
+  const f = fixture();
+  const replies: any[] = [];
+  try {
+    f.stream.receive({ register: { robot_id: "robot-1", protocol_version: PROTOCOL_VERSION, supports_pose_override: true } });
+    const ready = f.stream.messages.findLast(m => m.payload === "session_ready").session_ready;
+    f.stream.receive({ pose: { robot_id: "robot-1", x: 240, y: 520, theta: 0, status: "idle" } });
+    f.stream.receive({ control_ack: { robot_id: "robot-1", session_id: ready.session_id, control_epoch: ready.control_epoch, enabled: true, ready: true } });
+    (f.room as any).overrideRobotPose({ sessionId: "reject-test", send: (_type: string, body: any) => replies.push(body) }, { testOnly: true, mapId: "yard", robotId: "robot-1", requestId: "reject", expectedEpoch: f.room.state.robots.get("robot-1")!.controlEpoch, x: 240, y: 520, theta: 0 });
+    const override = f.stream.messages.findLast(m => m.payload === "pose_override").pose_override;
+    f.stream.receive({ pose_override_ack: { robot_id: "robot-1", request_id: "reject", session_id: override.session_id, control_epoch: override.control_epoch, applied: false, reason_code: "local_pose_infeasible" } });
+    expect(replies.at(-1)?.accepted).toBe(false);
+    expect(replies.at(-1)?.reason).toContain("local_pose_infeasible");
+    expect(f.room.state.robots.get("robot-1")!.controlEpoch).toBeGreaterThan(Number(override.control_epoch));
+  } finally { f.close(); }
+});
+
+test("disabled robots still receive current peer observations and offline bodies retain no future path", () => {
+  const f = fixture(); const peer = new RobotStream();
+  try {
+    f.stream.receive({ register: { robot_id: "robot-1", protocol_version: PROTOCOL_VERSION } });
+    f.stream.receive({ pose: { robot_id: "robot-1", x: 240, y: 520, theta: 0, status: "idle" } });
+    (f.room as any).setRobotControl({ sessionId: "disable-observation", send: () => {} }, { robotId: "robot-1", requestId: "disable", expectedEpoch: f.room.state.robots.get("robot-1")!.controlEpoch, enabled: false });
+    attachRobotSession(peer as any);
+    peer.receive({ register: { robot_id: "robot-2", protocol_version: PROTOCOL_VERSION } });
+    peer.receive({ pose: { robot_id: "robot-2", x: 320, y: 520, theta: 0, status: "idle" } });
+    peer.end();
+    (f.room as any).lastFleetPlanMs = 0;
+    (f.room as any).maybeBroadcastFleetLocalPlans();
+    const packet = f.stream.messages.findLast(m => m.payload === "fleet_local_plans").fleet_local_plans;
+    const body = packet.peers.find((p: any) => p.robot_id === "robot-2");
+    expect(body.x).toBe(320); expect(body.points).toEqual([]);
+    expect(Number(packet.control_epoch)).toBe(f.room.state.robots.get("robot-1")!.controlEpoch);
+  } finally { peer.end(); f.close(); }
+});
 
 test("protobuf telemetry and command lifecycle reach an existing browser through Colyseus patches", () => {
   const f = fixture();
@@ -176,6 +269,32 @@ test("browser command travels through both gRPC handlers, real robot motion and 
     for (let i = 0; i < 10; i++) (c as any).tick();
     expect(c.snapshot().x).toBe(stoppedX);
   } finally { c.stop(); f.close(); clearSemanticZones(); setExtraBlocked(null); }
+});
+
+test("cancelling a reserved teleporter stops entry before releasing its ledger use", () => {
+  const room = new FloorRoom();
+  const ledger = new TeleporterStore(":memory:");
+  const endpoint = { id: "source", mapId: "yard", position: { x: 240, y: 520 }, entryTheta: 0, exitTheta: 0, clearingPoint: { x: 280, y: 520 }, occupancyPolygon: defaultTeleporterOccupancyPolygon() };
+  ledger.upsert({ id: "cancel-t", name: "cancel", enabled: true, revision: 1, endpoints: [endpoint, { ...endpoint, id: "destination", mapId: "large_lab", position: { x: 1300, y: 1300 }, clearingPoint: { x: 1340, y: 1300 } }] });
+  room.onCreate({ runtimeStore: new RuntimeStore(":memory:"), teleporterStore: ledger });
+  const stream = new RobotStream(); attachRobotSession(stream as any);
+  try {
+    stream.receive({ register: { robot_id: "robot-1", protocol_version: PROTOCOL_VERSION } });
+    const ready = stream.messages.findLast(m => m.payload === "session_ready").session_ready;
+    stream.receive({ pose: { robot_id: "robot-1", x: 300, y: 520, theta: 0, status: "move", motion: "MOVING", traffic_status: "clear", session_id: ready.session_id, control_epoch: ready.control_epoch } });
+    stream.receive({ control_ack: { robot_id: "robot-1", session_id: ready.session_id, control_epoch: ready.control_epoch, enabled: true, ready: true } });
+    const connectedRobot = room.state.robots.get("robot-1")!;
+    connectedRobot.connected = true; connectedRobot.controlReady = true; connectedRobot.fmsControlState = "enabled"; connectedRobot.sessionId = ready.session_id;
+    ledger.claimRobotOwner({ robotId: "robot-1", mapId: "yard", controlEpoch: ready.control_epoch, transferId: "cancel-transfer" });
+    ledger.requestUse({ teleporterId: "cancel-t", robotId: "robot-1", fromEndpointId: "source", toEndpointId: "destination", requestId: "cancel-transfer", controlEpoch: ready.control_epoch });
+    ledger.promoteNext("cancel-t", () => true);
+    (room as any).teleporterTransfers.set("robot-1", { transferId: "cancel-transfer", teleporterId: "cancel-t", robotId: "robot-1", fromEndpointId: "source", toEndpointId: "destination", phase: "reserved", controlEpoch: ready.control_epoch, sourceMapId: "yard", destinationMapId: "large_lab", commandId: "cancel-transfer", reason: "" });
+    const robot = room.state.robots.get("robot-1")!; robot.commandId = "cancel-transfer:entry"; robot.commandState = "running";
+    (room as any).cancelRobot({ send: () => {} }, { robotId: "robot-1" });
+    expect(stream.messages.findLast(m => m.payload === "cancel")?.cancel?.command_id).toBe("cancel-transfer:entry");
+    expect(ledger.activeUse("cancel-t")).toBeNull();
+    expect((room as any).teleporterTransfers.has("robot-1")).toBe(false);
+  } finally { stream.end(); room.onDispose(); room.clock.stop(); ledger.close(); }
 });
 
 test("session identity isolation and timeout are reflected in browser state", () => {

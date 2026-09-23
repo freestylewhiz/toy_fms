@@ -1,0 +1,23 @@
+{
+  "width": 10000,
+  "height": 10000,
+  "freePixelCm": 5,
+  "source": "large_lab.png",
+  "cells": 100000000,
+  "center": [
+    5000,
+    5000
+  ],
+  "pillarRadiusPx": 1200,
+  "ringOuterRadiusPx": 1600,
+  "passageWidthPx": 200,
+  "inflateRadiusPx": 8,
+  "inflation": "conservative square clearance",
+  "quadrants": {
+    "Q1": "NE",
+    "Q2": "NW",
+    "Q3": "SW",
+    "Q4": "SE"
+  },
+  "encoding": "row-major uint8: 1 free, 0 blocked"
+}

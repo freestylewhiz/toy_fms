@@ -4,12 +4,15 @@
  */
 
 import { AUTHORITY_HZ, LEASE_MS } from "../../../shared/constants.ts";
+import { EvasionModes, EvasionWireNames, TrafficSignalWireNames, type FmsControlState, type TrafficStopDecision } from "../../../shared/config/index.ts";
 import type { Capsule, Corridor } from "../../../shared/corridor.ts";
 import {
   parseTrafficStatus,
   type LeaseRequestBody,
   type TrafficPlanAction,
   type TrafficStatus,
+  type TrafficStopCheck,
+  type TrafficStopStatus,
 } from "../../../shared/traffic/types.ts";
 import { LeaseLedger } from "./LeaseLedger.ts";
 import { SemanticCapacityGate } from "./SemanticCapacityGate.ts";
@@ -34,8 +37,18 @@ export type TrafficOutbound = {
       lease_until_ms: number;
       zone_id: string;
       reason: string;
+      stop_id?: string;
+      stop_generation?: number;
     },
   ) => void;
+  sendTrafficStopStatus?: (robotId: string, payload: {
+    stop_id: string;
+    stop_generation: number;
+    decision: TrafficStopDecision;
+    reason: string;
+    control_epoch: number;
+    session_id: string;
+  }) => void;
   sendBidRequest?: (robotId: string, zoneId: string, windowMs: number) => void;
   sendEvasionRequest?: (robotId: string, payload: Record<string, unknown>) => void;
   sendZoneUpdate?: (robotId: string, zoneId: string, state: string) => void;
@@ -116,7 +129,7 @@ export class TrafficController {
       this.outbound.sendLeaseGrant(robotId, {
         request_id: requestId,
         lease_id: leaseId,
-        signal: "SIGNAL_STOP",
+        signal: TrafficSignalWireNames.code.SIGNAL_STOP,
         held: { segments: [] },
         lease_until_ms: 0,
         zone_id: "",
@@ -133,7 +146,7 @@ export class TrafficController {
     };
     if (!this.isOperational(robotId)) {
       this.outbound.setRobotTrafficStatus(robotId, "stop");
-      this.outbound.sendLeaseGrant(robotId, { request_id: req.requestId, lease_id: req.leaseId, signal: "SIGNAL_STOP", held: { segments: [] }, lease_until_ms: 0, zone_id: "", reason: "robot control unavailable" });
+      this.outbound.sendLeaseGrant(robotId, { request_id: req.requestId, lease_id: req.leaseId, signal: TrafficSignalWireNames.code.SIGNAL_STOP, held: { segments: [] }, lease_until_ms: 0, zone_id: "", reason: "robot control unavailable" });
       return;
     }
     this.pendingRequestId.set(robotId, req.requestId);
@@ -164,11 +177,50 @@ export class TrafficController {
     this.applyActions(actions);
   }
 
+  handleTrafficStopCheck(robotId: string, msg: any): void {
+    if (!this.isOperational(robotId)) return;
+    const world = this.hooks.getWorld();
+    const robot = world.robots.find((r) => r.robotId === robotId);
+    const check: TrafficStopCheck = {
+      robotId,
+      stopId: String(msg?.stop_id ?? ""),
+      stopGeneration: Number(msg?.stop_generation ?? 0),
+      controlEpoch: Number(msg?.control_epoch ?? NaN),
+      sessionId: String(msg?.session_id ?? ""),
+    };
+    if (!check.stopId || !Number.isSafeInteger(check.stopGeneration) ||
+      check.controlEpoch !== robot?.controlEpoch || check.sessionId !== robot?.sessionId) return;
+    const status = this.policy.onTrafficStopCheck?.(robotId, check, world);
+    if (!status) return;
+    if (status.decision === "RESUME" && this.capacityGate.blocks(robotId, world)) {
+      status.decision = "STOP";
+      status.reason = "semantic capacity pending";
+    }
+    this.outbound.setRobotTrafficStatus(robotId, status.decision === "RESUME" ? "proceed" : "stop");
+    if (status.decision === "STOP" && (status.stopId !== check.stopId || status.stopGeneration !== check.stopGeneration)) {
+      const grant = this.policy.getTrafficStopGrant?.(robotId);
+      if (grant) this.applyActions([grant]);
+    }
+    this.outbound.sendTrafficStopStatus?.(robotId, {
+      stop_id: status.stopId,
+      stop_generation: status.stopGeneration,
+      decision: status.decision,
+      reason: status.reason,
+      control_epoch: check.controlEpoch,
+      session_id: check.sessionId,
+    });
+  }
+
   private tick(): void {
     const now = Date.now();
     this.ledger.expireBefore(now);
     const world = this.hooks.getWorld();
-    const actions = this.policy.tick({ ...world, robots: world.robots.filter(r => r.connected && r.fmsControlState !== "disabled" && r.controlReady !== false) });
+    // Policy reevaluation must see the last physical body of offline/disabled
+    // peers.  applyActions still gates emitted commands by operational state.
+    const policyWorld = this.policy.id === "local_plan_v1"
+      ? world
+      : { ...world, robots: world.robots.filter(r => r.connected && r.fmsControlState !== "disabled" && r.controlReady !== false) };
+    const actions = this.policy.tick(policyWorld);
     const semanticActions = this.capacityGate.tick(world);
     this.hooks.onRuntimeOccupancies?.(this.capacityGate.snapshot() as ResourceOccupancy[]);
     this.applyActions([...actions, ...semanticActions]);
@@ -193,14 +245,16 @@ export class TrafficController {
           lease_id: a.grant.leaseId,
           signal:
             a.grant.signal === "PROCEED"
-              ? "SIGNAL_PROCEED"
+              ? TrafficSignalWireNames.code.SIGNAL_PROCEED
               : a.grant.signal === "PARTIAL"
-                ? "SIGNAL_PARTIAL"
-                : "SIGNAL_STOP",
+                ? TrafficSignalWireNames.code.SIGNAL_PARTIAL
+                : TrafficSignalWireNames.code.SIGNAL_STOP,
           held: a.grant.held,
           lease_until_ms: a.grant.leaseDurationMs || LEASE_MS,
           zone_id: a.grant.zoneId,
           reason,
+          stop_id: a.grant.stopId,
+          stop_generation: a.grant.stopGeneration,
         });
         continue;
       }
@@ -214,7 +268,7 @@ export class TrafficController {
           round_id: a.roundId,
           lease_id: a.leaseId,
           release_hint: a.releaseHint,
-          mode: a.mode === "VACATE" ? "EVASION_VACATE" : "EVASION_REROUTE",
+          mode: a.mode === EvasionModes.code.VACATE ? EvasionWireNames.code.EVASION_VACATE : EvasionWireNames.code.EVASION_REROUTE,
           breadcrumb_hint: a.breadcrumbHint,
           deadline_ms: a.deadlineMs,
         });
@@ -260,10 +314,14 @@ export function robotViewFromPose(
     localPath?: { x: number; y: number }[];
     planId?: string;
     connected?: boolean;
-    fmsControlState?: "enabled" | "disabled";
+    fmsControlState?: FmsControlState;
     controlReady?: boolean;
     controlEpoch?: number;
     poseObserved?: boolean;
+    observedAtMs?: number;
+    localPlanObservedAtMs?: number;
+    sessionId?: string;
+    operatorPaused?: boolean;
   },
 ): RobotTrafficView {
   return {
@@ -284,5 +342,9 @@ export function robotViewFromPose(
     controlReady: pose.controlReady,
     controlEpoch: pose.controlEpoch,
     poseObserved: pose.poseObserved,
+    observedAtMs: pose.observedAtMs,
+    localPlanObservedAtMs: pose.localPlanObservedAtMs,
+    sessionId: pose.sessionId,
+    operatorPaused: pose.operatorPaused,
   };
 }

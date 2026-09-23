@@ -112,6 +112,8 @@ try {
   await selectOutliner("zone", zoneId);
   await page.locator("#insp-name").waitFor();
   assert.equal(await page.locator("#insp-id").textContent(), zoneId);
+  assert.equal(await page.locator("#zone-guidance").isVisible(), true, "prefer zone guidance is visible");
+  assert.match((await page.locator("#zone-guidance").textContent()) ?? "", /내부 유도|경계에서 멀/);
   assert.match(await page.locator("#resource-geometry").textContent() ?? "", /900\.00|980\.00/);
 
   // Draft name must not be overwritten by Colyseus telemetry patches.

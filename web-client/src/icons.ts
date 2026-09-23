@@ -1,3 +1,5 @@
+import { ResourceDisplayKinds } from "../../shared/config/index.ts";
+
 const paths: Record<string, string> = {
   select: '<path d="m5 3 13 9-7 1-3 7Z"/>',
   move: '<path d="M4 17V7h14m-5-5 5 5-5 5"/><circle cx="4" cy="18" r="2"/>',
@@ -16,6 +18,7 @@ const paths: Record<string, string> = {
   zone: '<path d="m5 4 13 2 3 12-12 3-7-9Z"/>',
   portal: '<path d="M5 21V3h14v18M2 12h14m-4-4 4 4-4 4"/>',
   rail: '<path d="M7 2v20M17 2v20M5 6h14M5 12h14M5 18h14"/>',
+  teleporter: '<circle cx="12" cy="12" r="8"/><path d="M4 12h16m-5-4 4 4-4 4"/>',
   grid: '<path d="M3 3h18v18H3ZM9 3v18m6-18v18M3 9h18M3 15h18"/>',
   marquee: '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5"/>',
   search: '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/>',
@@ -30,8 +33,4 @@ export function icon(name: string, className = 'tool-icon'): string {
   return `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shape}</svg>`;
 }
 
-export const resourceLabels: Record<string, string> = {
-  waypoint: '이동 지점', charger: '충전소', obstacle: '장애물', zone: '구역',
-  forbidden: '금지 구역', prefer: '선호 구역', avoid: '회피 구역', corridor: '회랑', complex: '교차 구역',
-  node: '노드', edge: '엣지', station: '스테이션', portal: '포털', rail: '레일', robot: '로봇',
-};
+export const resourceLabels: Record<string, string> = ResourceDisplayKinds.labels;

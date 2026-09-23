@@ -6,6 +6,32 @@ function schemaMap<T extends Record<string, unknown>>(rows: T[]): { forEach(cb: 
 }
 
 describe("browser robot projection", () => {
+  test("unknown display codes survive projection without being relabeled as idle or forbidden", () => {
+    const snapshot = snapshotFromState({
+      robots: schemaMap([{ id: "r", status: "future-status", trafficStatus: "future-traffic", commandState: "future-command" }]),
+      zones: schemaMap([{ id: "z", family: "future-family", kind: "future-zone", paramsJson: JSON.stringify({ directedLimitation: "FUTURE_LIMIT", releaseLossBehavior: "FUTURE_RELEASE" }) }]),
+      stations: schemaMap([{ id: "s", kind: "future-station" }]),
+    });
+    expect(snapshot.robots[0]).toMatchObject({ status: "future-status", trafficStatus: "future-traffic", commandState: "future-command" });
+    expect(snapshot.zones[0]).toMatchObject({ family: "future-family", kind: "future-zone", directedLimitation: "FUTURE_LIMIT", releaseLossBehavior: "FUTURE_RELEASE" });
+    expect(snapshot.stations[0].kind).toBe("future-station");
+  });
+
+  test("keeps active teleporter occupancy ahead of queued projections", () => {
+    const snapshot = snapshotFromState({
+      teleportersJson: JSON.stringify([{ id: "tp", name: "tp", endpoints: [
+        { id: "a", mapId: "yard", position: { x: 10, y: 10 }, entryTheta: 0, exitTheta: 0, occupancyPolygon: [] },
+        { id: "b", mapId: "large_lab", position: { x: 20, y: 20 }, entryTheta: 0, exitTheta: 0, occupancyPolygon: [] },
+      ] }]),
+      teleporterUsesJson: JSON.stringify([
+        { teleporterId: "tp", endpointId: "a", state: "reserved", robotId: "r1", reason: "active" },
+        { teleporterId: "tp", endpointId: "a", state: "queued", robotId: "r2", reason: "waiting" },
+      ]),
+    });
+    expect(snapshot.teleporters[0].endpoints[0].occupancyState).toBe("reserved");
+    expect(snapshot.teleporters[0].endpoints[0].occupancyRobotId).toBe("r1");
+  });
+
   test("keeps terminal command lifecycle and reason visible", () => {
     const snapshot = snapshotFromState({
       robots: schemaMap([{

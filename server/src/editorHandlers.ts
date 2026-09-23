@@ -1,7 +1,11 @@
+import { MAP_ID } from "../../shared/constants.ts";
+import { CorridorReferencePoints, EdgeReleaseLossBehaviors, FactorZoneKinds, StationKinds } from "../../shared/config/index.ts";
 import type { Client } from "@colyseus/core";
 import { isFree } from "../../shared/occupancy.ts";
 import {
   DEFAULT_EDGE_CORRIDOR,
+  SCENE_ZONE_KINDS,
+  VDA_ZONE_KINDS,
   type GraphEdge,
   type GraphNode,
   type Point,
@@ -27,9 +31,13 @@ import {
   persistDelete,
 } from "./editorSync.ts";
 
+const MAX_ZONE_VERTICES = 256;
+const FACTOR_ZONE_KINDS = new Set<ZoneKind>(FactorZoneKinds.values);
+
 function num(value: unknown): number | null {
-  if (value === null || value === undefined || value === "") return null;
-  const n = typeof value === "number" ? value : Number(value);
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string" || !value.trim()) return null;
+  const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
 function str(value: unknown): string {
@@ -55,7 +63,7 @@ export function newResourceId(prefix: string): string {
 }
 
 function points(raw: unknown): Point[] | null {
-  if (!Array.isArray(raw) || raw.length < 3) return null;
+  if (!Array.isArray(raw) || raw.length < 3 || raw.length > MAX_ZONE_VERTICES) return null;
   const out: Point[] = [];
   for (const p of raw) {
     const x = num((p as { x?: unknown })?.x);
@@ -64,6 +72,62 @@ function points(raw: unknown): Point[] | null {
     out.push({ x, y });
   }
   return out;
+}
+
+type ParsedZone = Omit<ZoneResource, "id" | "name">;
+type ZoneParseResult = { zone: ParsedZone } | { error: string };
+
+/**
+ * Validate the wire representation before it becomes a durable semantic
+ * snapshot.  The same snapshot is published to robots, so accepting values
+ * which navigation later clamps or ignores would make editor state misleading.
+ */
+export function parseZoneUpsert(payload: Record<string, unknown>): ZoneParseResult {
+  const rawPoly = points(payload.polygon);
+  if (!rawPoly) return { error: `zone needs 3-${MAX_ZONE_VERTICES} finite vertices` };
+  if (!isSimplePolygon(rawPoly)) return { error: "존이 접히면 안 돼. 꼭짓점을 다시 잡아" };
+  const polygon = ensureCcw(rawPoly);
+  if (Math.abs(polygon.reduce((a, p, i) => a + p.x * polygon[(i + 1) % polygon.length].y - polygon[(i + 1) % polygon.length].x * p.y, 0)) < 1e-6) {
+    return { error: "zone area must be nonzero" };
+  }
+
+  const kind = str(payload.zoneKind) as ZoneKind;
+  if (!kind) return { error: "zoneKind required" };
+  const suppliedFamily = str(payload.family);
+  if (suppliedFamily && suppliedFamily !== "scene" && suppliedFamily !== "vda") return { error: "invalid zone family" };
+  // Older editor clients did not send family. Infer it from the stable kind
+  // vocabulary so their persisted snapshot remains compatible.
+  const family: ZoneResource["family"] = suppliedFamily === "vda" ? "vda" : suppliedFamily === "scene" ? "scene" : (VDA_ZONE_KINDS.includes(kind) ? "vda" : "scene");
+  const allowedKinds = family === "scene" ? SCENE_ZONE_KINDS : VDA_ZONE_KINDS;
+  if (!allowedKinds.includes(kind)) return { error: `invalid ${family} zoneKind` };
+
+  const factor = num(payload.factor);
+  if ("factor" in payload) {
+    if (factor === null) return { error: "factor must be finite" };
+    if (!FACTOR_ZONE_KINDS.has(kind)) return { error: "factor is only valid for prefer, avoid, priority, and penalty zones" };
+    if (factor < 0) return { error: "factor must be nonnegative" };
+  }
+  const maximumSpeed = num(payload.maximumSpeed);
+  if ("maximumSpeed" in payload && maximumSpeed === null) return { error: "maximumSpeed must be finite" };
+  if (maximumSpeed !== null && maximumSpeed < 0) return { error: "maximumSpeed must be nonnegative" };
+  const capacity = num(payload.capacity);
+  if ("capacity" in payload && capacity === null) return { error: "capacity must be finite" };
+  if (capacity !== null && capacity < 0) return { error: "capacity must be nonnegative" };
+
+  return {
+    zone: {
+      family,
+      kind,
+      polygon,
+      theta: num(payload.theta) ?? 0,
+      factor: factor ?? undefined,
+      maximumSpeed: maximumSpeed ?? undefined,
+      capacity: capacity ?? undefined,
+      direction: num(payload.direction) ?? undefined,
+      directedLimitation: (str(payload.directedLimitation) as ZoneResource["directedLimitation"]) || undefined,
+      releaseLossBehavior: (str(payload.releaseLossBehavior) as ZoneResource["releaseLossBehavior"]) || undefined,
+    },
+  };
 }
 
 export function handleEditorUpsert(state: FloorState, client: Client, payload: Record<string, unknown>): string | null {
@@ -105,41 +169,13 @@ export function handleEditorUpsert(state: FloorState, client: Client, payload: R
   }
 
   if (kind === "zone") {
-    const rawPoly = points(payload.polygon);
-    if (!rawPoly) {
-      deny(client, "zone needs ≥3 vertices");
-      return null;
-    }
-    if (!isSimplePolygon(rawPoly)) {
-      deny(client, "존이 접히면 안 돼. 꼭짓점을 다시 잡아");
-      return null;
-    }
-    const polygon = ensureCcw(rawPoly);
-    const zKind = str(payload.zoneKind) as ZoneKind;
-    if (!zKind) {
-      deny(client, "zoneKind required");
-      return null;
-    }
-    if (!(["forbidden", "prefer", "avoid", "corridor", "complex", "blocked", "release", "line_guided", "speed_limit", "priority", "penalty", "directed", "bidirected", "replanning", "action_zone"] as string[]).includes(zKind)) { deny(client, "invalid zoneKind"); return null; }
-    if (Math.abs(polygon.reduce((a, p, i) => a + p.x * polygon[(i + 1) % polygon.length].y - polygon[(i + 1) % polygon.length].x * p.y, 0)) < 1e-6) { deny(client, "zone area must be nonzero"); return null; }
-    if (num(payload.factor) !== null && (num(payload.factor)! < 0)) { deny(client, "factor must be nonnegative"); return null; }
-    if (num(payload.maximumSpeed) !== null && num(payload.maximumSpeed)! < 0) { deny(client, "maximumSpeed must be nonnegative"); return null; }
-    if (num(payload.capacity) !== null && num(payload.capacity)! < 0) { deny(client, "capacity must be nonnegative"); return null; }
-    const family = str(payload.family) === "vda" ? "vda" : "scene";
-    const id = str(payload.id) || newResourceId(family === "vda" ? "vz" : "sz");
+    const parsed = parseZoneUpsert(payload);
+    if ("error" in parsed) { deny(client, parsed.error); return null; }
+    const id = str(payload.id) || newResourceId(parsed.zone.family === "vda" ? "vz" : "sz");
     const row: ZoneResource = {
       id,
-      family,
-      kind: zKind,
       name: str(payload.name) || id,
-      polygon,
-      theta: num(payload.theta) ?? 0,
-      factor: num(payload.factor) ?? undefined,
-      maximumSpeed: num(payload.maximumSpeed) ?? undefined,
-      capacity: num(payload.capacity) ?? undefined,
-      direction: num(payload.direction) ?? undefined,
-      directedLimitation: (str(payload.directedLimitation) as ZoneResource["directedLimitation"]) || undefined,
-      releaseLossBehavior: (str(payload.releaseLossBehavior) as ZoneResource["releaseLossBehavior"]) || undefined,
+      ...parsed.zone,
     };
     persistAndSetZone(state, row);
     return id;
@@ -164,7 +200,7 @@ export function handleEditorUpsert(state: FloorState, client: Client, payload: R
       y,
       theta,
       name: str(payload.name) || id,
-      mapId: str(payload.mapId) || "yard",
+      mapId: MAP_ID,
       allowedDeviationXY: num(payload.allowedDeviationXY) ?? undefined,
       allowedDeviationTheta: num(payload.allowedDeviationTheta) ?? undefined,
       actions: Array.isArray(payload.actions) ? (payload.actions as GraphNode["actions"]) : [],
@@ -202,10 +238,11 @@ export function handleEditorUpsert(state: FloorState, client: Client, payload: R
       corridor: {
         leftWidth: num(corridorRaw.leftWidth) ?? DEFAULT_EDGE_CORRIDOR.leftWidth,
         rightWidth: num(corridorRaw.rightWidth) ?? DEFAULT_EDGE_CORRIDOR.rightWidth,
-        corridorReferencePoint:
-          corridorRaw.corridorReferencePoint === "CONTOUR" ? "CONTOUR" : "KINEMATIC_CENTER",
+        corridorReferencePoint: CorridorReferencePoints.is(corridorRaw.corridorReferencePoint)
+          ? corridorRaw.corridorReferencePoint : CorridorReferencePoints.code.KINEMATIC_CENTER,
         releaseRequired: Boolean(corridorRaw.releaseRequired),
-        releaseLossBehavior: corridorRaw.releaseLossBehavior === "RETURN" ? "RETURN" : "STOP",
+        releaseLossBehavior: EdgeReleaseLossBehaviors.is(corridorRaw.releaseLossBehavior)
+          ? corridorRaw.releaseLossBehavior : EdgeReleaseLossBehaviors.code.STOP,
       },
     };
     persistAndSetEdge(state, row);
@@ -232,7 +269,7 @@ export function handleEditorUpsert(state: FloorState, client: Client, payload: R
       y,
       theta,
       name: str(payload.name) || id,
-      kind: sk === "charger" || sk === "pick_drop" || sk === "wait" || sk === "other" ? sk : "other",
+      kind: StationKinds.is(sk) ? sk : StationKinds.code.other,
       interactionNodeIds: Array.isArray(payload.interactionNodeIds)
         ? payload.interactionNodeIds.map((v) => String(v))
         : [],

@@ -1,10 +1,44 @@
+# Dependencies and generated builds
 node_modules/
-**/node_modules/
-web-client/public/
-data/*.sqlite
-data/*.sqlite-wal
-data/*.sqlite-shm
+/web-client/public/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Runtime databases, blackbox recordings, robot journals, logs and backups
+/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 *.log
+*.pid
+
+# Large Lab occupancy binaries: regenerate with `bun run maps:large-lab`
+/resources/maps/large_lab.occupancy.bin
+/resources/maps/large_lab.occupancy_inflated.bin
+
+# Local credentials and machine-specific agent/editor settings
+.env
+.env.*
+!.env.example
+!.env.template
+/.codex/
+/.idea/
+/.vscode/
+
+# Generated inspection output and local screenshots/experiments
+/graphify-out/
+/share/
+/test-results/
+/playwright-report/
+/blob-report/
+/tmp/
+/temp/
+
+# OS/editor temporary files
 .DS_Store
-share/map-noise-experiment/
-.codex/config.toml
+Thumbs.db
+*.swp
+*.swo
+*~

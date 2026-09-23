@@ -1,3 +1,5 @@
+import { MAP_ID } from "../../shared/constants.ts";
+import { CommandStates, ConnectionStates, DriveStates, FmsControlStates, NavigationModes, PathPlanningAuthorities, RobotMotions, RobotStatuses, StationKinds, TrafficStatuses, WorkStates, type RobotStatus } from "../../shared/config/index.ts";
 import { ArraySchema, MapSchema, Schema, type } from "@colyseus/schema";
 
 export class Waypoint extends Schema {
@@ -26,11 +28,11 @@ export class Robot extends Schema {
   @type("number") x = 0;
   @type("number") y = 0;
   @type("number") theta = 0;
-  @type("string") status: "idle" | "move" = "idle";
+  @type("string") status: RobotStatus = RobotStatuses.code.idle;
   @type("boolean") connected = false;
-  @type("string") motion = "";
+  @type("string") motion: string = RobotMotions.code.IDLE;
   @type("string") commandId = "";
-  @type("string") commandState = "idle";
+  @type("string") commandState: string = CommandStates.code.idle;
   @type("string") commandReason = "";
   @type([PathPoint]) localPath = new ArraySchema<PathPoint>();
   @type("number") localHorizonS = 0;
@@ -38,21 +40,26 @@ export class Robot extends Schema {
   @type("number") headRoomPx = 0;
   @type("number") lastSeenAt = 0;
   /** Traffic-control status: clear|proceed|partial|hold|stop|evade|lease_lost */
-  @type("string") trafficStatus = "clear";
+  @type("string") trafficStatus: string = TrafficStatuses.code.clear;
   @type([PathPoint]) path = new ArraySchema<PathPoint>();
-  @type("string") workState = "unknown";
-  @type("string") fmsControlState = "enabled";
-  @type("string") connectionState = "offline";
+  @type("string") workState: string = WorkStates.code.unknown;
+  @type("string") fmsControlState: string = FmsControlStates.code.enabled;
+  @type("string") connectionState: string = ConnectionStates.code.offline;
   @type("string") connectionReason = "";
-  @type("string") driveState = "unknown";
+  @type("string") driveState: string = DriveStates.code.unknown;
   @type("string") driveContextJson = "[]";
   @type("number") controlEpoch = 0;
   @type("boolean") controlReady = false;
   @type("number") reportedAt = 0;
   @type("number") stateChangedAt = 0;
   @type("string") sessionId = "";
-  @type("string") navigationMode = "unknown";
-  @type("string") pathPlanningAuthority = "unknown";
+  @type("string") navigationMode: string = NavigationModes.code.unknown;
+  @type("string") pathPlanningAuthority: string = PathPlanningAuthorities.code.unknown;
+  /** Operator motion pause is independent from FMS operational disable. */
+  @type("boolean") operatorPaused = false;
+  @type("boolean") operatorPauseDesired = false;
+  @type("boolean") operatorPausePending = false;
+  @type("string") operatorPauseReason = "";
 }
 
 export class Obstacle extends Schema {
@@ -81,7 +88,7 @@ export class GraphNode extends Schema {
   @type("number") y = 0;
   @type("number") theta = 0;
   @type("string") name = "";
-  @type("string") mapId = "yard";
+  @type("string") mapId: string = MAP_ID;
   @type("number") allowedDeviationXY = 0;
   @type("number") allowedDeviationTheta = 0;
   @type("string") actionsJson = "[]";
@@ -104,7 +111,7 @@ export class VdaStation extends Schema {
   @type("number") y = 0;
   @type("number") theta = 0;
   @type("string") name = "";
-  @type("string") kind = "other";
+  @type("string") kind: string = StationKinds.code.other;
   @type("string") interactionJson = "[]";
 }
 
@@ -129,6 +136,7 @@ export class Rail extends Schema {
 }
 
 export class FloorState extends Schema {
+  @type("string") mapId = MAP_ID;
   @type({ map: Waypoint }) waypoints = new MapSchema<Waypoint>();
   @type({ map: ChargingStation }) chargingStations = new MapSchema<ChargingStation>();
   @type({ map: Robot }) robots = new MapSchema<Robot>();
@@ -139,5 +147,8 @@ export class FloorState extends Schema {
   @type({ map: VdaStation }) stations = new MapSchema<VdaStation>();
   @type({ map: Portal }) portals = new MapSchema<Portal>();
   @type({ map: Rail }) rails = new MapSchema<Rail>();
+  /** Global teleporter definitions are projected as JSON; the authoritative rows live in the shared store. */
+  @type("string") teleportersJson = "[]";
+  @type("string") teleporterUsesJson = "[]";
   @type("string") runtimeOccupanciesJson = "[]";
 }

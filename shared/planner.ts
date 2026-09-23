@@ -1,7 +1,11 @@
-import { MAP_HEIGHT, MAP_WIDTH } from "./constants.ts";
-import { inflatedGrid, isPlanFree, robotFootprintClear } from "./occupancy.ts";
+import { COARSE_CELL_SIZE_PX, MAP_HEIGHT, MAP_WIDTH, MIN_SMOOTHING_RADIUS_PX, SEMANTIC_NAVIGATION_GRID_CELL_LIMIT } from "./constants.ts";
+import { coarseAstar } from "./coarse.ts";
+import { extraBlockedState, inflatedGrid, isInflatedFree, isPlanFree, robotFootprintClear } from "./occupancy.ts";
+import { poseHitsAny } from "./obstacles.ts";
+import type { DynObstacle } from "./obstacles.ts";
 import type { SemanticSnapshot, ZoneResource } from "./semantic.ts";
 import { buildSemanticNavigation, isSemanticPoseBlocked } from "./semanticNavigation.ts";
+import type { PlannerMode, PlannerFallbackReason } from "./config/index.ts";
 
 export type Point = { x: number; y: number };
 
@@ -23,6 +27,27 @@ let semanticZones: ZoneResource[] = [];
 let semanticBlocked: Uint8Array | null = null;
 let semanticCosts: Float32Array | null = null;
 let semanticMinimumCost = 1;
+let semanticIsBlocked: ((point: Point) => boolean) | undefined;
+let semanticCostAt: ((point: Point) => number) | undefined;
+let planningObstacles: DynObstacle[] = [];
+let planningObstacleRevision = -1;
+let planningEscapeStart: Point | null = null;
+
+/**
+ * Supply exact dynamic geometry after refreshing setExtraBlocked(mask). The
+ * revision binding prevents an older geometry snapshot from relaxing a newer
+ * conservative mask.
+ */
+export function setPlanningObstacles(obstacles: DynObstacle[]): void {
+  planningObstacles = obstacles.map((obstacle) => ({ ...obstacle }));
+  planningObstacleRevision = extraBlockedState().revision;
+}
+
+export function clearPlanningObstacles(): void { planningObstacles = []; planningObstacleRevision = -1; }
+
+function currentPlanningObstacles(): DynObstacle[] {
+  return planningObstacleRevision === extraBlockedState().revision ? planningObstacles : [];
+}
 
 /** Replace the active map policy. Safe to call on every semantic snapshot. */
 export function setSemanticZones(zones: ZoneResource[]): void {
@@ -31,36 +56,57 @@ export function setSemanticZones(zones: ZoneResource[]): void {
   semanticBlocked = nav.blocked;
   semanticCosts = nav.costs;
   semanticMinimumCost = nav.minimumCost;
+  semanticIsBlocked = nav.isBlocked;
+  semanticCostAt = nav.costAt;
 }
 
 export function setSemanticSnapshot(snapshot: Pick<SemanticSnapshot, "zones"> | null): void {
   setSemanticZones(snapshot?.zones ?? []);
 }
 
-export function clearSemanticZones(): void { semanticZones = []; semanticBlocked = null; semanticCosts = null; semanticMinimumCost = 1; }
+export function clearSemanticZones(): void {
+  semanticZones = [];
+  semanticBlocked = null;
+  semanticCosts = null;
+  semanticMinimumCost = 1;
+  semanticIsBlocked = undefined;
+  semanticCostAt = undefined;
+}
 
 function semanticFree(x: number, y: number): boolean {
   const ix = Math.round(x), iy = Math.round(y);
-  return ix >= 0 && iy >= 0 && ix < MAP_WIDTH && iy < MAP_HEIGHT && semanticBlocked?.[iy * MAP_WIDTH + ix] !== 1;
+  if (ix < 0 || iy < 0 || ix >= MAP_WIDTH || iy >= MAP_HEIGHT) return false;
+  if (semanticBlocked) return semanticBlocked[iy * MAP_WIDTH + ix] !== 1;
+  return !semanticIsBlocked?.({ x: ix, y: iy });
 }
 
 function semanticCost(x: number, y: number): number {
-  return semanticCosts?.[Math.round(y) * MAP_WIDTH + Math.round(x)] ?? 1;
+  return semanticCosts?.[Math.round(y) * MAP_WIDTH + Math.round(x)] ?? semanticCostAt?.({ x, y }) ?? 1;
+}
+
+/** Dynamic masks remain a conservative search hint; exact geometry is final. */
+function planningCellFree(x: number, y: number, allowDynamicGeometry = false): boolean {
+  const obstacles = currentPlanningObstacles();
+  if (!obstacles.length) return isPlanFree(x, y);
+  if (!allowDynamicGeometry && planningEscapeStart && Math.hypot(x - planningEscapeStart.x, y - planningEscapeStart.y) <= 32 && isInflatedFree(x, y) && !poseHitsAny(x, y, 0, obstacles)) return true;
+  if (!allowDynamicGeometry) return isPlanFree(x, y);
+  if (!isInflatedFree(x, y)) return false;
+  return !poseHitsAny(x, y, 0, obstacles);
 }
 
 function key(x: number, y: number): number {
   return y * MAP_WIDTH + x;
 }
 
-function snapSafe(x: number, y: number): Point | null {
+function snapSafe(x: number, y: number, allowDynamicGeometry = false): Point | null {
   const ix = Math.round(x);
   const iy = Math.round(y);
-  if (isPlanFree(ix, iy) && semanticFree(ix, iy)) return { x: ix, y: iy };
+    if (planningCellFree(ix, iy, allowDynamicGeometry) && semanticFree(ix, iy)) return { x: ix, y: iy };
   for (let r = 1; r <= 24; r++) {
     for (let dy = -r; dy <= r; dy++) {
       for (let dx = -r; dx <= r; dx++) {
         if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-        if (isPlanFree(ix + dx, iy + dy) && semanticFree(ix + dx, iy + dy)) return { x: ix + dx, y: iy + dy };
+        if (planningCellFree(ix + dx, iy + dy, allowDynamicGeometry) && semanticFree(ix + dx, iy + dy)) return { x: ix + dx, y: iy + dy };
       }
     }
   }
@@ -84,7 +130,26 @@ function lineClear(a: Point, b: Point): boolean {
   const n = Math.max(1, Math.ceil(Math.hypot(dx, dy)));
   for (let i = 0; i <= n; i++) {
     const t = i / n;
-    if (!isPlanFree(a.x + dx * t, a.y + dy * t) || !semanticFree(a.x + dx * t, a.y + dy * t)) return false;
+    if (!planningCellFree(a.x + dx * t, a.y + dy * t) || !semanticFree(a.x + dx * t, a.y + dy * t)) return false;
+  }
+  return true;
+}
+
+/** Check the new curved corner at the same body level as controller motion. */
+function poseSegmentClear(a: Point, b: Point): boolean {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const d = Math.hypot(dx, dy);
+  const heading = d < 1e-8 ? 0 : Math.atan2(dy, dx);
+  const n = Math.max(1, Math.ceil(d));
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const x = a.x + dx * t;
+    const y = a.y + dy * t;
+    if (!isInflatedFree(x, y) || !semanticFree(x, y) || !robotFootprintClear(x, y, heading)) return false;
+    const obstacles = currentPlanningObstacles();
+    if (obstacles.length && poseHitsAny(x, y, heading, obstacles)) return false;
+    if (!obstacles.length && !isPlanFree(x, y)) return false;
   }
   return true;
 }
@@ -109,6 +174,64 @@ function stringPull(path: Point[]): Point[] {
     out.push(path[best]);
     i = best;
   }
+  return out;
+}
+
+/**
+ * Replace a sufficiently spacious polyline corner with a small circular arc.
+ * We retain the original corner whenever the arc would reduce clearance or
+ * increase semantic cost, leaving the controller's safe slow-turn fallback.
+ */
+function roundedCorner(a: Point, b: Point, c: Point): Point[] | null {
+  const inX = b.x - a.x, inY = b.y - a.y;
+  const outX = c.x - b.x, outY = c.y - b.y;
+  const inLength = Math.hypot(inX, inY);
+  const outLength = Math.hypot(outX, outY);
+  if (inLength < 1e-6 || outLength < 1e-6) return null;
+  const ux = inX / inLength, uy = inY / inLength;
+  const vx = outX / outLength, vy = outY / outLength;
+  const dot = Math.max(-1, Math.min(1, ux * vx + uy * vy));
+  const cross = ux * vy - uy * vx;
+  const turn = Math.atan2(Math.abs(cross), dot);
+  if (turn < 0.08 || turn > Math.PI - 0.08) return null;
+  const trim = MIN_SMOOTHING_RADIUS_PX * Math.tan(turn / 2);
+  if (trim < 2 || trim > Math.min(inLength / 2, outLength / 2)) return null;
+
+  const start = { x: b.x - ux * trim, y: b.y - uy * trim };
+  const end = { x: b.x + vx * trim, y: b.y + vy * trim };
+  const turnSign = Math.sign(cross);
+  if (!turnSign) return null;
+  const center = { x: start.x - turnSign * uy * MIN_SMOOTHING_RADIUS_PX, y: start.y + turnSign * ux * MIN_SMOOTHING_RADIUS_PX };
+  const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
+  let sweep = Math.atan2(end.y - center.y, end.x - center.x) - startAngle;
+  if (turnSign > 0 && sweep < 0) sweep += 2 * Math.PI;
+  if (turnSign < 0 && sweep > 0) sweep -= 2 * Math.PI;
+  if (Math.abs(Math.abs(sweep) - turn) > 1e-4) return null;
+
+  const steps = Math.max(2, Math.ceil(MIN_SMOOTHING_RADIUS_PX * turn / 3));
+  const arc: Point[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const angle = startAngle + sweep * i / steps;
+    arc.push({ x: center.x + MIN_SMOOTHING_RADIUS_PX * Math.cos(angle), y: center.y + MIN_SMOOTHING_RADIUS_PX * Math.sin(angle) });
+  }
+  const replacedCost = arc.slice(1).reduce((total, point, i) => total + lineCost(arc[i], point), 0);
+  const retainedCost = lineCost(start, b) + lineCost(b, end);
+  if (replacedCost > retainedCost + 1e-6) return null;
+  for (let i = 1; i < arc.length; i++) {
+    if (!poseSegmentClear(arc[i - 1], arc[i])) return null;
+  }
+  return arc;
+}
+
+function roundCorners(path: Point[]): Point[] {
+  if (path.length <= 2) return path;
+  const out: Point[] = [path[0]];
+  for (let i = 1; i < path.length - 1; i++) {
+    const arc = roundedCorner(path[i - 1], path[i], path[i + 1]);
+    if (arc) out.push(...arc);
+    else out.push(path[i]);
+  }
+  out.push(path[path.length - 1]);
   return out;
 }
 
@@ -150,54 +273,66 @@ class MinHeap {
   }
 }
 
-export function astar(start: Point, goal: Point): Point[] | null {
-  if (isSemanticPoseBlocked(semanticZones, goal)) return null;
-  const s = snapSafe(start.x, start.y);
+function astarSearch(start: Point, goal: Point): { path: Point[] | null; expanded: number } {
+  planningEscapeStart = start;
+  if (isSemanticPoseBlocked(semanticZones, goal)) return { path: null, expanded: 0 };
+  const s = snapSafe(start.x, start.y, true);
   const g = snapSafe(goal.x, goal.y);
-  if (!s || !g) return null;
+  if (!s || !g) return { path: null, expanded: 0 };
   const grid = inflatedGrid();
   const startK = key(s.x, s.y);
   const goalK = key(g.x, g.y);
-  const came = new Int32Array(MAP_WIDTH * MAP_HEIGHT).fill(-1);
-  const gScore = new Float64Array(MAP_WIDTH * MAP_HEIGHT).fill(Infinity);
-  gScore[startK] = 0;
+  // A 100M-cell map otherwise allocates >1.2 GB for every route request.
+  // Keep the existing exact grid search but allocate only visited cells on large maps.
+  const sparse = MAP_WIDTH * MAP_HEIGHT > SEMANTIC_NAVIGATION_GRID_CELL_LIMIT;
+  const came = sparse ? new Map<number, number>() : new Int32Array(MAP_WIDTH * MAP_HEIGHT).fill(-1);
+  const gScore = sparse ? new Map<number, number>() : new Float64Array(MAP_WIDTH * MAP_HEIGHT).fill(Infinity);
+  const score = (k: number) => gScore instanceof Map ? (gScore.get(k) ?? Infinity) : gScore[k];
+  const setScore = (k: number, v: number) => { if (gScore instanceof Map) gScore.set(k, v); else gScore[k] = v; };
+  const parent = (k: number) => came instanceof Map ? came.get(k)! : came[k];
+  const setParent = (k: number, v: number) => { if (came instanceof Map) came.set(k, v); else came[k] = v; };
+  setScore(startK, 0);
   const open = new MinHeap();
   open.push(startK, Math.hypot(g.x - s.x, g.y - s.y) * semanticMinimumCost);
-  const inOpen = new Uint8Array(MAP_WIDTH * MAP_HEIGHT);
-  inOpen[startK] = 1;
 
+  let expanded = 0;
   while (open.data.length) {
     const cur = open.pop()!;
+    expanded++;
     if (cur === goalK) {
       const path: Point[] = [];
       let k = cur;
       while (k !== startK) {
         path.push({ x: k % MAP_WIDTH, y: Math.floor(k / MAP_WIDTH) });
-        k = came[k];
+        k = parent(k);
       }
       path.push(s);
       path.reverse();
       path[path.length - 1] = g;
-      return stringPull(path);
+      return { path: roundCorners(stringPull(path)), expanded };
     }
     const cx = cur % MAP_WIDTH;
     const cy = Math.floor(cur / MAP_WIDTH);
-    const cg = gScore[cur];
+    const cg = score(cur);
     for (const [dx, dy, cost] of NEIGHBORS) {
       const nx = cx + dx;
       const ny = cy + dy;
       if (nx < 0 || ny < 0 || nx >= MAP_WIDTH || ny >= MAP_HEIGHT) continue;
       const nk = key(nx, ny);
       if (grid[nk] !== 1 || !semanticFree(nx, ny)) continue;
-      if (!isPlanFree(nx, ny)) continue;
+      if (!planningCellFree(nx, ny)) continue;
       const ng = cg + cost * semanticCost(nx, ny);
-      if (ng >= gScore[nk]) continue;
-      gScore[nk] = ng;
-      came[nk] = cur;
+      if (ng >= score(nk)) continue;
+      setScore(nk, ng);
+      setParent(nk, cur);
       open.push(nk, ng + Math.hypot(g.x - nx, g.y - ny) * semanticMinimumCost);
     }
   }
-  return null;
+  return { path: null, expanded };
+}
+
+export function astar(start: Point, goal: Point): Point[] | null {
+  return astarSearch(start, goal).path;
 }
 
 export function densify(path: Point[], spacing = 4): Point[] {
@@ -216,20 +351,113 @@ export function densify(path: Point[], spacing = 4): Point[] {
   return out;
 }
 
-export function planDrive(start: Point, goal: Point): Point[] | null {
-  return planRoute(start, goal)?.follow ?? null;
+export type PlanRouteOptions = { coarseCellSizePx?: number };
+export type PlanDiagnostics = {
+  mode: PlannerMode;
+  coarseAttempted: boolean;
+  coarseFallback: boolean;
+  coarseExpanded: number;
+  fineExpanded: number;
+  expanded: number;
+  durationMs: number;
+  fallbackReason?: PlannerFallbackReason;
+};
+export type RoutePlan = { follow: Point[]; display: Point[]; diagnostics?: PlanDiagnostics };
+
+function validPoint(point: Point): boolean {
+  return Number.isFinite(point.x) && Number.isFinite(point.y) && point.x >= 0 && point.y >= 0 && point.x < MAP_WIDTH && point.y < MAP_HEIGHT;
 }
 
-export function planRoute(start: Point, goal: Point): { follow: Point[]; display: Point[] } | null {
-  const display = astar(start, goal);
-  if (!display) return null;
-  const end = display[display.length - 1];
-  // A* searches integer cells; preserve a reachable fractional command target.
-  // Keep a blocked target snapped so the controller can wait/replan safely.
-  if (end && (end.x !== goal.x || end.y !== goal.y) && lineClear(end, goal)) {
-    display.push({ ...goal });
+function attachExactEndpoints(path: Point[], start: Point, goal: Point): Point[] | null {
+  if (!path.length) return null;
+  const out = path.map((point) => ({ ...point }));
+  if (Math.hypot(out[0].x - start.x, out[0].y - start.y) > 1e-9) {
+    // A padded dynamic mask can reject the first snapped cell even though the
+    // exact body is clear. Find the first restored point with a safe source
+    // resolution connector and discard only the rejected prefix; this keeps
+    // the actual pose as the route origin without an unsafe snapped jump.
+    let connector = -1;
+    for (let i = 0; i < out.length; i++) {
+      if (poseSegmentClear(start, out[i])) { connector = i; break; }
+    }
+    if (connector >= 0) {
+      out.splice(0, connector);
+      out.unshift({ ...start });
+    }
   }
-  return { display, follow: densify(display, 3) };
+  const end = out[out.length - 1];
+  if (Math.hypot(end.x - goal.x, end.y - goal.y) > 1e-9) {
+    // The same rule applies to a temporarily occupied goal. Forbidden goals
+    // are rejected earlier by astar; a dynamic block retains the safe snapped
+    // endpoint for the normal HOLD/replan flow.
+    if (poseSegmentClear(end, goal)) out.push({ ...goal });
+  }
+  return out;
+}
+
+function pathSegmentsClear(path: Point[]): boolean {
+  for (let i = 1; i < path.length; i++) if (!poseSegmentClear(path[i - 1], path[i])) return false;
+  return true;
+}
+
+export function planDrive(start: Point, goal: Point, options?: PlanRouteOptions): Point[] | null {
+  return planRoute(start, goal, options)?.follow ?? null;
+}
+
+export function planRoute(start: Point, goal: Point, options: PlanRouteOptions = {}): RoutePlan | null {
+  const started = performance.now();
+  planningEscapeStart = null;
+  if (!validPoint(start) || !validPoint(goal)) return null;
+  if (options.coarseCellSizePx !== undefined &&
+      (!Number.isFinite(options.coarseCellSizePx) || !Number.isInteger(options.coarseCellSizePx) || options.coarseCellSizePx < 1)) {
+    throw new RangeError("coarseCellSizePx must be a positive integer");
+  }
+  const coarseRequested = (options.coarseCellSizePx ?? COARSE_CELL_SIZE_PX) > 1;
+  let coarseExpanded = 0;
+  let fallbackReason: PlannerFallbackReason | undefined;
+  if (coarseRequested) {
+    const coarse = coarseAstar(start, goal, {
+      cellSizePx: options.coarseCellSizePx ?? COARSE_CELL_SIZE_PX,
+      semanticZones,
+      semanticCost: (point) => semanticCostAt?.(point) ?? semanticCost(point.x, point.y),
+      minimumCost: semanticMinimumCost,
+      dynamicEndpointFree: currentPlanningObstacles().length
+        ? (point) => !poseHitsAny(point.x, point.y, 0, currentPlanningObstacles())
+        : undefined,
+      segmentClear: poseSegmentClear,
+    });
+    coarseExpanded = coarse.expanded;
+    if (coarse.path) {
+      const smoothed = roundCorners(stringPull(coarse.path));
+      // Restore at source resolution and apply the same body-level check used
+      // by controller motion. A physically safe chord may use free space in a
+      // conservatively blocked coarse cell; the final source-resolution check
+      // is the authority for that refinement.
+      const candidate = pathSegmentsClear(smoothed) ? smoothed : coarse.path;
+      const display = attachExactEndpoints(candidate, start, goal);
+      if (display) {
+        const diagnostics: PlanDiagnostics = {
+          mode: "coarse", coarseAttempted: true, coarseFallback: false,
+          coarseExpanded, fineExpanded: 0, expanded: coarseExpanded,
+          durationMs: performance.now() - started,
+        };
+        return { display, follow: densify(display, 3), diagnostics };
+      }
+      fallbackReason = "coarse_validation";
+    } else {
+      fallbackReason = coarse.reason ?? "coarse_no_route";
+    }
+  }
+  const fine = astarSearch(start, goal);
+  if (!fine.path) return null;
+  const display = attachExactEndpoints(fine.path, start, goal);
+  if (!display || !pathSegmentsClear(display)) return null;
+  const diagnostics: PlanDiagnostics = {
+    mode: "fine", coarseAttempted: coarseRequested, coarseFallback: coarseRequested,
+    coarseExpanded, fineExpanded: fine.expanded, expanded: coarseExpanded + fine.expanded,
+    durationMs: performance.now() - started, fallbackReason,
+  };
+  return { display, follow: densify(display, 3), diagnostics };
 }
 
 export function poseFeasible(x: number, y: number, theta: number): boolean {

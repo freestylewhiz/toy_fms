@@ -1,4 +1,6 @@
+import { PROTOCOL_MESSAGES, PROTOCOL_DIRECTIONS } from "../../../shared/config/messages.ts";
 import * as grpc from "@grpc/grpc-js";
+import { currentOperationId, commandOperationId } from "../blackboxIntegration.ts";
 import * as protoLoader from "@grpc/proto-loader";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +53,7 @@ export type PoseUpdate = {
   sessionId?: string;
   navigationMode?: string;
   pathPlanningAuthority?: string;
+  operatorPaused?: boolean;
 };
 export type CommandStateUpdate = { robotId: string; commandId: string; commandState: CommandState; commandReason: string };
 
@@ -60,6 +63,7 @@ export type DriveCommand = {
   x: number;
   y: number;
   theta: number;
+  event_context_json?: string;
 };
 
 type PoseSink = (pose: PoseUpdate) => void;
@@ -69,20 +73,28 @@ type LocalPlanSink = (
   horizonS: number,
 ) => void;
 type DisconnectSink = (robotId: string) => void;
-type RegisterSink = (robotId: string) => void;
+type RegisterSink = (robotId: string, capabilities: { supportsPoseOverride: boolean }) => void;
+type RegisterGuard = (robotId: string, mapId: string, transferId: string) => boolean;
 type CommandStateSink = (update: CommandStateUpdate) => void;
 type LeaseRequestSink = (robotId: string, msg: any) => void;
 type LeaseReleaseSink = (robotId: string, msg: any) => void;
 type BidSink = (robotId: string, msg: any) => void;
 type EvasionReplySink = (robotId: string, msg: any) => void;
+type TrafficStopCheckSink = (robotId: string, msg: any) => void;
+export type MotionPauseAck = { requestId: string; paused: boolean; applied: boolean; reasonCode: string; controlEpoch: number; sessionId: string };
+type MotionPauseAckSink = (robotId: string, ack: MotionPauseAck) => void;
 type StreamCall = grpc.ServerDuplexStream<any, any>;
 type ObstacleProvider = () => DynObstacle[];
 type SemanticProvider = () => unknown;
-export type ControlState = { enabled: boolean; controlEpoch: number };
+export type ControlState = { enabled: boolean; controlEpoch: number; operatorPaused?: boolean };
 export type ControlAck = ControlState & { ready: boolean; sessionId: string };
+export type PoseOverrideCommand = { requestId: string; x: number; y: number; theta: number; controlEpoch: number };
+export type PoseOverrideAck = { requestId: string; applied: boolean; reasonCode: string; controlEpoch: number; sessionId: string };
 type ControlProvider = (robotId: string) => ControlState;
 type ControlAckSink = (robotId: string, ack: ControlAck) => void;
 type ControlGuard = (robotId: string) => boolean;
+export type TeleporterTransferUpdate = { robotId: string; transferId: string; phase: string; reason: string; mapId: string; controlEpoch: number; sessionId: string };
+type TeleporterTransferSink = (update: TeleporterTransferUpdate) => void;
 
 const sessions = new Map<string, StreamCall>();
 const lastSeen = new Map<StreamCall, number>();
@@ -91,17 +103,25 @@ let poseSink: PoseSink | null = null;
 let localPlanSink: LocalPlanSink | null = null;
 let disconnectSink: DisconnectSink | null = null;
 let registerSink: RegisterSink | null = null;
+let registerGuard: RegisterGuard | null = null;
 let commandStateSink: CommandStateSink | null = null;
 let knownRobotIds: (() => Iterable<string>) | null = null;
 let leaseRequestSink: LeaseRequestSink | null = null;
 let leaseReleaseSink: LeaseReleaseSink | null = null;
 let bidSink: BidSink | null = null;
 let evasionReplySink: EvasionReplySink | null = null;
+let trafficStopCheckSink: TrafficStopCheckSink | null = null;
+let motionPauseAckSink: MotionPauseAckSink | null = null;
 let obstacleProvider: ObstacleProvider = () => [];
 let semanticProvider: SemanticProvider = () => null;
 let controlProvider: ControlProvider = () => ({ enabled: true, controlEpoch: 0 });
 let controlAckSink: ControlAckSink | null = null;
+let poseOverrideAckSink: ((robotId: string, ack: PoseOverrideAck) => void) | null = null;
+type ProtocolTrace = (direction: (typeof PROTOCOL_DIRECTIONS.values)[number], robotId: string, message: Record<string, any>, reason?: string) => void;
+let protocolTrace: ProtocolTrace | null = null;
+export function setProtocolTrace(trace: ProtocolTrace | null) { protocolTrace = trace; }
 let controlGuard: ControlGuard = () => true;
+let teleporterTransferSink: TeleporterTransferSink | null = null;
 const sessionIds = new Map<string, string>();
 const sessionEpochs = new Map<string, number>();
 
@@ -128,6 +148,7 @@ export function setDisconnectSink(fn: DisconnectSink | null) {
 export function setRegisterSink(fn: RegisterSink | null) {
   registerSink = fn;
 }
+export function setRegisterGuard(fn: RegisterGuard | null) { registerGuard = fn; }
 export function setCommandStateSink(fn: CommandStateSink | null) { commandStateSink = fn; }
 export function setKnownRobotIds(fn: (() => Iterable<string>) | null) { knownRobotIds = fn; }
 
@@ -146,6 +167,10 @@ export function setBidSink(fn: BidSink | null) {
 export function setEvasionReplySink(fn: EvasionReplySink | null) {
   evasionReplySink = fn;
 }
+export function setTrafficStopCheckSink(fn: TrafficStopCheckSink | null) {
+  trafficStopCheckSink = fn;
+}
+export function setMotionPauseAckSink(fn: MotionPauseAckSink | null) { motionPauseAckSink = fn; }
 
 export function setObstacleProvider(fn: ObstacleProvider) {
   obstacleProvider = fn;
@@ -157,13 +182,55 @@ export function setSemanticProvider(fn: SemanticProvider) {
 }
 export function setControlProvider(fn: ControlProvider) { controlProvider = fn; }
 export function setControlAckSink(fn: ControlAckSink | null) { controlAckSink = fn; }
+export function setPoseOverrideAckSink(fn: ((robotId: string, ack: PoseOverrideAck) => void) | null) { poseOverrideAckSink = fn; }
 export function setControlGuard(fn: ControlGuard) { controlGuard = fn; }
+export function setTeleporterTransferSink(fn: TeleporterTransferSink | null) { teleporterTransferSink = fn; }
+
+export function sendTeleporterTransfer(robotId: string, command: Record<string, unknown>): boolean {
+  return writeOperational(robotId, PROTOCOL_MESSAGES.code.teleporter_transfer, { robot_id: robotId, ...command });
+}
+/** Transfer handoff is sent after the durable owner CAS. It may cross the normal
+ * source control fence once, but remains bound to the current authenticated
+ * session and epoch. */
+export function sendCommittedTeleporterTransfer(robotId: string, command: Record<string, unknown>): boolean {
+  const epoch = Number(command.control_epoch);
+  if (!Number.isFinite(epoch) || epoch !== (sessionEpochs.get(robotId) ?? controlProvider(robotId).controlEpoch)) return false;
+  return writeTo(robotId, { teleporter_transfer: envelope(robotId, { robot_id: robotId, ...command }) });
+}
+export function sendTeleporterConstraints(robotId: string, constraints: { blocked: { id: string; polygon: { x: number; y: number }[] }[] }): boolean {
+  return writeTo(robotId, { teleporter_constraints: envelope(robotId, { json: JSON.stringify(constraints) }) });
+}
 
 export function sendControlState(robotId: string, state: ControlState): boolean {
   const sessionId = sessionIds.get(robotId);
   if (!sessionId) return false;
   sessionEpochs.set(robotId, state.controlEpoch);
-  return writeTo(robotId, { control_state: { enabled: state.enabled, control_epoch: state.controlEpoch, session_id: sessionId } });
+  const operatorPaused = state.operatorPaused ?? controlProvider(robotId).operatorPaused === true;
+  return writeTo(robotId, { control_state: { enabled: state.enabled, control_epoch: state.controlEpoch, session_id: sessionId, operator_paused: operatorPaused } });
+}
+
+/** Independent actuator request; it remains sendable while FMS control is disabled. */
+export function sendMotionPause(robotId: string, request: { requestId: string; paused: boolean; controlEpoch: number }): boolean {
+  const sessionId = sessionIds.get(robotId);
+  if (!sessionId || !request.requestId || sessionEpochs.get(robotId) !== request.controlEpoch) return false;
+  return writeTo(robotId, { motion_pause: { request_id: request.requestId, paused: request.paused, control_epoch: request.controlEpoch, session_id: sessionId } });
+}
+
+/**
+ * Simulator-only administrative command. It deliberately bypasses the normal
+ * operational guard because the server sends it while control is disabled.
+ */
+export function sendPoseOverride(robotId: string, command: PoseOverrideCommand): boolean {
+  const sessionId = sessionIds.get(robotId);
+  if (!sessionId || !Number.isSafeInteger(command.controlEpoch) || sessionEpochs.get(robotId) !== command.controlEpoch) return false;
+  return writeTo(robotId, { pose_override: {
+    request_id: command.requestId,
+    x: command.x,
+    y: command.y,
+    theta: command.theta,
+    control_epoch: command.controlEpoch,
+    session_id: sessionId,
+  } });
 }
 
 export function broadcastSemanticSnapshot(): void {
@@ -187,7 +254,11 @@ function writeTo(robotId: string, msg: Record<string, unknown>): boolean {
   const call = sessions.get(robotId);
   if (!call || call.destroyed || call.writableEnded) return false;
   try {
-    call.write(msg);
+    const body = Object.values(msg).find(v => v && typeof v === "object") as any;
+    const operationId = currentOperationId() ?? commandOperationId(String(body?.command_id || body?.transfer_id || ""));
+    const traced = operationId ? { ...msg, operation_id: operationId } : msg;
+    protocolTrace?.("send", robotId, traced);
+    call.write(traced);
     return true;
   } catch (err) {
     console.warn(`[grpc] write failed for ${robotId}:`, err);
@@ -196,34 +267,38 @@ function writeTo(robotId: string, msg: Record<string, unknown>): boolean {
 }
 
 export function sendDrive(robotId: string, cmd: DriveCommand): boolean {
-  return writeOperational(robotId, "drive", cmd);
+  return writeOperational(robotId, PROTOCOL_MESSAGES.code.drive, cmd);
 }
 
 export function sendCancel(robotId: string, command_id = ""): boolean {
-  return writeOperational(robotId, "cancel", { command_id });
+  return writeOperational(robotId, PROTOCOL_MESSAGES.code.cancel, { command_id });
 }
 
 export function sendLeaseGrant(robotId: string, payload: Record<string, unknown>): boolean {
-  return writeOperational(robotId, "lease_grant", payload);
+  return writeOperational(robotId, PROTOCOL_MESSAGES.code.lease_grant, payload);
+}
+
+export function sendTrafficStopStatus(robotId: string, payload: Record<string, unknown>): boolean {
+  return writeOperational(robotId, PROTOCOL_MESSAGES.code.traffic_stop_status, payload);
 }
 
 export function sendBidRequest(robotId: string, payload: Record<string, unknown>): boolean {
-  return writeOperational(robotId, "bid_request", payload);
+  return writeOperational(robotId, PROTOCOL_MESSAGES.code.bid_request, payload);
 }
 
 export function sendEvasionRequest(robotId: string, payload: Record<string, unknown>): boolean {
-  return writeOperational(robotId, "evasion_request", payload);
+  return writeOperational(robotId, PROTOCOL_MESSAGES.code.evasion_request, payload);
 }
 
 export function sendZoneUpdate(robotId: string, payload: Record<string, unknown>): boolean {
-  return writeOperational(robotId, "zone_update", payload);
+  return writeOperational(robotId, PROTOCOL_MESSAGES.code.zone_update, payload);
 }
 
 function envelope(robotId: string, body: Record<string, unknown>): Record<string, unknown> {
   return { ...body, control_epoch: sessionEpochs.get(robotId) ?? controlProvider(robotId).controlEpoch, session_id: sessionIds.get(robotId) ?? "" };
 }
 function writeOperational(robotId: string, key: string, body: Record<string, unknown>): boolean {
-  if (!controlGuard(robotId)) return false;
+  if (!controlGuard(robotId)) { protocolTrace?.("discard", robotId, { [key]: body }, "control_not_ready"); return false; }
   return writeTo(robotId, { [key]: envelope(robotId, body) });
 }
 
@@ -254,7 +329,9 @@ export function broadcastSensedPeers(peers: SensedPeerPose[]): void {
         y: p.y,
         theta: p.theta,
       }));
-    writeOperational(id, "sensed_peers", { peers: others });
+    // Observations remain available while administratively disabled. They do
+    // not grant motion authority, but keep test pose validation current.
+    writeTo(id, { sensed_peers: envelope(id, { peers: others }) });
   }
 }
 
@@ -264,6 +341,7 @@ export type FleetPeerPlan = {
   y: number;
   theta: number;
   points: { x: number; y: number }[];
+  operatorPaused?: boolean;
 };
 
 /** Push pose + ~5s local plans to every other robot on this map (v1). */
@@ -278,8 +356,9 @@ export function broadcastFleetLocalPlans(peers: FleetPeerPlan[]): void {
         y: p.y,
         theta: p.theta,
         points: p.points,
+        operator_paused: p.operatorPaused === true,
       }));
-    writeOperational(id, "fleet_local_plans", { peers: others });
+    writeTo(id, { fleet_local_plans: envelope(id, { peers: others }) });
   }
 }
 
@@ -341,22 +420,36 @@ function resolveRobotId(msgRobotId: unknown, sessionId: string | null): string {
 function operationalMessageValid(robotId: string, body: any): boolean {
   const sid = String(body?.session_id ?? "");
   const epoch = Number(body?.control_epoch);
-  return sid === sessionIds.get(robotId) && Number.isFinite(epoch) && epoch === (sessionEpochs.get(robotId) ?? controlProvider(robotId).controlEpoch) && controlGuard(robotId);
+  const valid = sid === sessionIds.get(robotId) && Number.isFinite(epoch) && epoch === (sessionEpochs.get(robotId) ?? controlProvider(robotId).controlEpoch) && controlGuard(robotId);
+  if (!valid) protocolTrace?.("discard", robotId, { stale: body }, "session_epoch_or_control_mismatch");
+  return valid;
+}
+function telemetryMessageValid(robotId: string, body: any): boolean {
+  const sid = String(body?.session_id ?? "");
+  const epoch = Number(body?.control_epoch);
+  return sid === sessionIds.get(robotId) && Number.isFinite(epoch) && epoch === (sessionEpochs.get(robotId) ?? controlProvider(robotId).controlEpoch);
 }
 
 function session(call: StreamCall) {
   let robotId: string | null = null;
+  // Only the one bootstrap pose may omit the authenticated envelope. Every
+  // subsequent pose is bound to the current session and control generation.
+  let initialPoseAccepted = false;
   lastSeen.set(call, Date.now());
 
   call.on("data", (msg: any) => {
     lastSeen.set(call, Date.now());
     const which = msg?.payload;
-    if (which === "register" || msg?.register) {
+    protocolTrace?.("receive", robotId ?? String(msg?.register?.robot_id ?? ""), msg);
+    if (which === PROTOCOL_MESSAGES.code.register || msg?.register) {
       const id = String(msg.register?.robot_id ?? "").trim();
       if (!id) return;
       if (robotId && robotId !== id) return;
       const version = Number(msg.register?.protocol_version ?? 0);
-      if (version !== PROTOCOL_VERSION || (knownRobotIds && ![...knownRobotIds()].includes(id))) {
+      const mapId = String(msg.register?.map_id ?? "");
+      const transferId = String(msg.register?.transfer_id ?? "");
+      const known = !knownRobotIds || [...knownRobotIds()].includes(id);
+      if (version !== PROTOCOL_VERSION || !(registerGuard ? registerGuard(id, mapId, transferId) : known)) {
         try { call.end(); } catch { /* ignore */ }
         return;
       }
@@ -375,7 +468,7 @@ function session(call: StreamCall) {
           /* ignore */
         }
       }
-      registerSink?.(id);
+      registerSink?.(id, { supportsPoseOverride: msg.register?.supports_pose_override === true });
       const control = controlProvider(id);
       sessionEpochs.set(id, control.controlEpoch);
       writeTo(id, { obstacles: { items: obstacleProvider().map(shapeOf) } });
@@ -389,12 +482,13 @@ function session(call: StreamCall) {
     // Every payload after registration is bound to the authenticated stream.
     if (!robotId) return;
 
-    if (which === "pose" || msg?.pose) {
+    if (which === PROTOCOL_MESSAGES.code.pose || msg?.pose) {
       const p = msg.pose ?? {};
       const id = resolveRobotId(p.robot_id, robotId);
       if (!id) return;
       if (id !== robotId) return;
-      if (p.session_id && String(p.session_id) !== sessionIds.get(robotId)) return;
+      if (!p.session_id && !initialPoseAccepted) initialPoseAccepted = true;
+      else if (!telemetryMessageValid(robotId, p)) return;
       const x = Number(p.x);
       const y = Number(p.y);
       const theta = Number(p.theta);
@@ -422,10 +516,18 @@ function session(call: StreamCall) {
         sessionId: p.session_id ? String(p.session_id) : undefined,
         navigationMode: p.navigation_mode ? String(p.navigation_mode) : undefined,
         pathPlanningAuthority: p.path_planning_authority ? String(p.path_planning_authority) : undefined,
+        operatorPaused: typeof p.operator_paused === "boolean" ? p.operator_paused : undefined,
       });
       return;
     }
-    if (which === "control_ack" || msg?.control_ack) {
+    if (which === PROTOCOL_MESSAGES.code.pose_override_ack || msg?.pose_override_ack) {
+      const a = msg.pose_override_ack ?? {};
+      if (String(a.robot_id ?? robotId) !== robotId || !telemetryMessageValid(robotId, a) || !a.request_id) return;
+      poseOverrideAckSink?.(robotId, { requestId: String(a.request_id), applied: a.applied === true,
+        reasonCode: String(a.reason_code ?? ""), controlEpoch: Number(a.control_epoch), sessionId: String(a.session_id) });
+      return;
+    }
+    if (which === PROTOCOL_MESSAGES.code.control_ack || msg?.control_ack) {
       const a = msg.control_ack ?? {};
       const epoch = Number(a.control_epoch);
       const sid = String(a.session_id ?? "");
@@ -433,9 +535,25 @@ function session(call: StreamCall) {
       controlAckSink?.(robotId, { controlEpoch: epoch, enabled: Boolean(a.enabled), ready: Boolean(a.ready), sessionId: sid });
       return;
     }
+    if (which === PROTOCOL_MESSAGES.code.motion_pause_ack || msg?.motion_pause_ack) {
+      const a = msg.motion_pause_ack ?? {};
+      if (String(a.robot_id ?? robotId) !== robotId || !telemetryMessageValid(robotId, a) || !String(a.request_id ?? "")) return;
+      motionPauseAckSink?.(robotId, {
+        requestId: String(a.request_id), paused: a.paused === true, applied: a.applied === true,
+        reasonCode: String(a.reason_code ?? ""), controlEpoch: Number(a.control_epoch), sessionId: String(a.session_id),
+      });
+      return;
+    }
 
-    if (which === "heartbeat" || msg?.heartbeat) return;
-    if (which === "command_state" || msg?.command_state) {
+    if (which === PROTOCOL_MESSAGES.code.heartbeat || msg?.heartbeat) return;
+    if (which === PROTOCOL_MESSAGES.code.teleporter_transfer || msg?.teleporter_transfer) {
+      const t = msg.teleporter_transfer ?? {};
+      if (!operationalMessageValid(robotId, t)) return;
+      if (String(t.robot_id ?? robotId) !== robotId || !String(t.transfer_id ?? "")) return;
+      teleporterTransferSink?.({ robotId, transferId: String(t.transfer_id), phase: String(t.phase ?? ""), reason: String(t.reason ?? ""), mapId: String(t.map_id ?? ""), controlEpoch: Number(t.control_epoch), sessionId: String(t.session_id ?? "") });
+      return;
+    }
+    if (which === PROTOCOL_MESSAGES.code.command_state || msg?.command_state) {
       const r = msg.command_state ?? {};
       if (!operationalMessageValid(robotId, r)) return;
       const id = resolveRobotId(r.robot_id, robotId);
@@ -446,7 +564,7 @@ function session(call: StreamCall) {
       return;
     }
 
-    if (which === "path" || msg?.path) {
+    if (which === PROTOCOL_MESSAGES.code.path || msg?.path) {
       const p = msg.path ?? {};
       if (!operationalMessageValid(robotId, p)) return;
       const id = resolveRobotId(p.robot_id, robotId);
@@ -466,7 +584,7 @@ function session(call: StreamCall) {
       return;
     }
 
-    if (which === "place_reply" || msg?.place_reply) {
+    if (which === PROTOCOL_MESSAGES.code.place_reply || msg?.place_reply) {
       const r = msg.place_reply ?? {};
       const queryId = String(r.query_id ?? "");
       const p = pending.get(queryId);
@@ -479,7 +597,7 @@ function session(call: StreamCall) {
       return;
     }
 
-    if (which === "lease_request" || msg?.lease_request) {
+    if (which === PROTOCOL_MESSAGES.code.lease_request || msg?.lease_request) {
       const r = msg.lease_request ?? {};
       if (!operationalMessageValid(robotId, r)) return;
       const id = resolveRobotId(r.robot_id, robotId);
@@ -488,7 +606,7 @@ function session(call: StreamCall) {
       return;
     }
 
-    if (which === "lease_release" || msg?.lease_release) {
+    if (which === PROTOCOL_MESSAGES.code.lease_release || msg?.lease_release) {
       const r = msg.lease_release ?? {};
       if (!operationalMessageValid(robotId, r)) return;
       const id = resolveRobotId(r.robot_id, robotId);
@@ -497,7 +615,7 @@ function session(call: StreamCall) {
       return;
     }
 
-    if (which === "traffic_bid" || msg?.traffic_bid) {
+    if (which === PROTOCOL_MESSAGES.code.traffic_bid || msg?.traffic_bid) {
       const r = msg.traffic_bid ?? {};
       if (!operationalMessageValid(robotId, r)) return;
       const id = resolveRobotId(null, robotId);
@@ -506,7 +624,7 @@ function session(call: StreamCall) {
       return;
     }
 
-    if (which === "evasion_reply" || msg?.evasion_reply) {
+    if (which === PROTOCOL_MESSAGES.code.evasion_reply || msg?.evasion_reply) {
       const r = msg.evasion_reply ?? {};
       if (!operationalMessageValid(robotId, r)) return;
       const id = resolveRobotId(null, robotId);
@@ -515,7 +633,15 @@ function session(call: StreamCall) {
       return;
     }
 
-    if (which === "local_plan" || msg?.local_plan) {
+    if (which === PROTOCOL_MESSAGES.code.traffic_stop_check || msg?.traffic_stop_check) {
+      const r = msg.traffic_stop_check ?? {};
+      if (!operationalMessageValid(robotId, r)) return;
+      if (resolveRobotId(r.robot_id, robotId) !== robotId || !String(r.stop_id ?? "") || Number(r.stop_generation) < 1) return;
+      trafficStopCheckSink?.(robotId, r);
+      return;
+    }
+
+    if (which === PROTOCOL_MESSAGES.code.local_plan || msg?.local_plan) {
       const p = msg.local_plan ?? {};
       if (!operationalMessageValid(robotId, p)) return;
       const id = resolveRobotId(p.robot_id, robotId);
@@ -534,6 +660,7 @@ function session(call: StreamCall) {
         status: "",
         localPath: points,
         localHorizonS: Number.isFinite(horizonS) ? horizonS : 5,
+        operatorPaused: typeof p.operator_paused === "boolean" ? p.operator_paused : undefined,
       });
       return;
     }

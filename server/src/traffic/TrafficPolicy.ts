@@ -15,6 +15,7 @@ import type {
   ZoneId,
 } from "../../../shared/traffic/types.ts";
 import type { ZoneResource } from "../../../shared/semantic.ts";
+import type { FmsControlState } from "../../../shared/config/index.ts";
 
 export type RobotTrafficView = {
   robotId: string;
@@ -30,10 +31,16 @@ export type RobotTrafficView = {
   localPath?: { x: number; y: number }[];
   planId: string;
   connected: boolean;
-  fmsControlState?: "enabled" | "disabled";
+  fmsControlState?: FmsControlState;
   controlReady?: boolean;
   controlEpoch?: number;
   poseObserved?: boolean;
+  /** Server receive time of the pose/local plan used for safety decisions. */
+  observedAtMs?: number;
+  localPlanObservedAtMs?: number;
+  sessionId?: string;
+  /** Pause freezes future prediction while retaining localPath for semantic claims. */
+  operatorPaused?: boolean;
 };
 
 export type TrafficWorldSnapshot = {
@@ -67,6 +74,9 @@ export interface TrafficPolicy {
   onLeaseRelease(robotId: string, leaseId: string, freed: Corridor, retained: Corridor): TrafficPlanAction[];
   onBid(robotId: string, zoneId: ZoneId, seed: number): TrafficPlanAction[];
   onEvasionReply(robotId: string, payload: Record<string, unknown>): TrafficPlanAction[];
+  /** Re-evaluate an identified STOP after a reconnect or dropped response. */
+  onTrafficStopCheck?(robotId: string, check: import("../../../shared/traffic/types.ts").TrafficStopCheck, world: TrafficWorldSnapshot): import("../../../shared/traffic/types.ts").TrafficStopStatus;
+  getTrafficStopGrant?(robotId: string): TrafficPlanAction | undefined;
   /** Periodic tick — renew leases, zone lifecycle, deadlock watch. */
   tick(world: TrafficWorldSnapshot): TrafficPlanAction[];
 }

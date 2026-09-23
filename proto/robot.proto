@@ -7,6 +7,7 @@ service RobotBridge {
 }
 
 message RobotToServer {
+  string operation_id = 30;
   oneof payload {
     RegisterRequest register = 1;
     PoseUpdate pose = 2;
@@ -20,10 +21,15 @@ message RobotToServer {
     LocalPlanUpdate local_plan = 10;
     CommandStateUpdate command_state = 11;
     ControlAck control_ack = 12;
+    TeleporterTransferUpdate teleporter_transfer = 13;
+    PoseOverrideAck pose_override_ack = 14;
+    TrafficStopCheck traffic_stop_check = 15;
+    MotionPauseAck motion_pause_ack = 16;
   }
 }
 
 message ServerToRobot {
+  string operation_id = 30;
   oneof payload {
     DriveCommand drive = 1;
     CancelCommand cancel = 2;
@@ -40,6 +46,11 @@ message ServerToRobot {
     SessionReady session_ready = 12;
     Heartbeat heartbeat = 13;
     ControlState control_state = 14;
+    TeleporterTransferCommand teleporter_transfer = 15;
+    TeleporterConstraints teleporter_constraints = 16;
+    PoseOverrideCommand pose_override = 17;
+    TrafficStopStatus traffic_stop_status = 18;
+    MotionPause motion_pause = 19;
   }
 }
 
@@ -68,6 +79,7 @@ message LocalPlanUpdate {
   double horizon_s = 3;
   uint64 control_epoch = 4;
   string session_id = 5;
+  bool operator_paused = 6;
 }
 
 message PeerLocalPlan {
@@ -76,6 +88,7 @@ message PeerLocalPlan {
   double y = 3;
   double theta = 4;
   repeated PathPoint points = 5;
+  bool operator_paused = 6;
 }
 
 message FleetLocalPlans {
@@ -87,7 +100,68 @@ message FleetLocalPlans {
 message RegisterRequest {
   string robot_id = 1;
   uint32 protocol_version = 2;
+  string map_id = 3;
+  string transfer_id = 4;
+  // Explicit simulator capability. Physical robots must leave this false.
+  bool supports_pose_override = 5;
 }
+
+// Simulator-only administrative pose placement. The robot must apply this
+// only when session_id/control_epoch match its current server control state,
+// then publish a fresh idle/stationary PoseUpdate at that generation.
+message PoseOverrideCommand {
+  string request_id = 1;
+  double x = 2;
+  double y = 3;
+  double theta = 4;
+  uint64 control_epoch = 5;
+  string session_id = 6;
+}
+
+// Application acknowledgement, ordered BEFORE the fresh post-application pose.
+// Matching coordinates alone never prove that this request was applied.
+message PoseOverrideAck {
+  string robot_id = 1;
+  string request_id = 2;
+  bool applied = 3;
+  string reason_code = 4;
+  uint64 control_epoch = 5;
+  string session_id = 6;
+}
+
+// Durable cross-map transfer handshake. transfer_id is idempotency key;
+// control_epoch binds every phase to the single current owner.
+message TeleporterTransferUpdate {
+  string robot_id = 1;
+  string transfer_id = 2;
+  string phase = 3;
+  string reason = 4;
+  string map_id = 5;
+  uint64 control_epoch = 6;
+  string session_id = 7;
+}
+
+message TeleporterTransferCommand {
+  string robot_id = 1;
+  string transfer_id = 2;
+  string teleporter_id = 3;
+  string from_endpoint_id = 4;
+  string to_endpoint_id = 5;
+  string destination_map_id = 6;
+  string destination_target = 7;
+  double entry_x = 8;
+  double entry_y = 9;
+  double entry_theta = 10;
+  double exit_x = 11;
+  double exit_y = 12;
+  double exit_theta = 13;
+  double clearing_x = 14;
+  double clearing_y = 15;
+  uint64 control_epoch = 16;
+  string session_id = 17;
+}
+
+message TeleporterConstraints { string json = 1; uint64 control_epoch = 2; string session_id = 3; }
 
 // Sent after the initial resource snapshots; motion requires this handshake.
 message SessionReady {
@@ -135,6 +209,7 @@ message PoseUpdate {
   string drive_state = 19;
   string drive_context_json = 20;
   int64 reported_at = 21;
+  bool operator_paused = 22;
 }
 
 message PathPoint {
@@ -167,6 +242,9 @@ message DriveCommand {
   double theta = 5;
   uint64 control_epoch = 6;
   string session_id = 7;
+  // Optional diagnostic snapshot (command kind, destination and resource name).
+  // Never used to authorize or execute motion; older peers may omit it.
+  string event_context_json = 8;
 }
 
 message CancelCommand {
@@ -240,6 +318,25 @@ message LeaseGrant {
   string reason = 7;
   uint64 control_epoch = 8;
   string session_id = 9;
+  string stop_id = 10;
+  uint64 stop_generation = 11;
+}
+
+message TrafficStopCheck {
+  string robot_id = 1;
+  string stop_id = 2;
+  uint64 stop_generation = 3;
+  uint64 control_epoch = 4;
+  string session_id = 5;
+}
+
+message TrafficStopStatus {
+  string stop_id = 1;
+  uint64 stop_generation = 2;
+  string decision = 3;
+  string reason = 4;
+  uint64 control_epoch = 5;
+  string session_id = 6;
 }
 
 message LeaseRelease {
@@ -304,6 +401,7 @@ message ControlState {
   bool enabled = 1;
   uint64 control_epoch = 2;
   string session_id = 3;
+  bool operator_paused = 4;
 }
 
 message ControlAck {
@@ -312,6 +410,25 @@ message ControlAck {
   bool enabled = 3;
   bool ready = 4;
   string session_id = 5;
+}
+
+// Independent motion pause latch. This is not an FMS operational disable or
+// traffic STOP; commands are still scoped to the session and control epoch.
+message MotionPause {
+  string request_id = 1;
+  bool paused = 2;
+  string session_id = 3;
+  uint64 control_epoch = 4;
+}
+
+message MotionPauseAck {
+  string robot_id = 1;
+  string request_id = 2;
+  bool paused = 3;
+  bool applied = 4;
+  string reason_code = 5;
+  string session_id = 6;
+  uint64 control_epoch = 7;
 }
 
 message Breadcrumb {

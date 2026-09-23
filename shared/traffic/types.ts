@@ -4,41 +4,42 @@
  */
 
 import type { Capsule, Corridor } from "../corridor.ts";
+import {
+  EvasionModes,
+  TrafficPlanActionKinds,
+  TrafficPolicyIds,
+  TrafficSignals,
+  TrafficSignalWireNumbers,
+  TrafficSignalWireNames,
+  TrafficStatuses,
+  type ZoneUpdateState,
+  type EvasionMode as CatalogEvasionMode,
+  type TrafficPolicyId as CatalogTrafficPolicyId,
+  type TrafficSignal as CatalogTrafficSignal,
+  type TrafficStatus as CatalogTrafficStatus,
+  type TrafficStopDecision as CatalogTrafficStopDecision,
+} from "../config/index.ts";
 
 /** Colyseus / UI traffic status shown on the robot. */
-export type TrafficStatus =
-  | "clear" // not under traffic control / free proceed
-  | "proceed" // lease granted, moving under TC
-  | "partial" // front of request only — approaching stop line
-  | "hold" // waiting inside own lease for signal
-  | "stop" // red — no grant, waiting
-  | "evade" // computing / executing evasion
-  | "lease_lost"; // lease expired / communication fail-safe
+export type TrafficStatus = CatalogTrafficStatus;
 
-export const TRAFFIC_STATUSES: readonly TrafficStatus[] = [
-  "clear",
-  "proceed",
-  "partial",
-  "hold",
-  "stop",
-  "evade",
-  "lease_lost",
-] as const;
+export const TRAFFIC_STATUSES: readonly TrafficStatus[] = TrafficStatuses.values;
 
 export function parseTrafficStatus(raw: unknown): TrafficStatus {
   const s = String(raw ?? "");
-  return (TRAFFIC_STATUSES as readonly string[]).includes(s) ? (s as TrafficStatus) : "clear";
+  return TrafficStatuses.is(s) ? s : "clear";
 }
 
-export type TrafficSignal = "STOP" | "PROCEED" | "PARTIAL";
+export type TrafficSignal = CatalogTrafficSignal;
 
 export function parseTrafficSignal(raw: unknown): TrafficSignal {
-  if (raw === 1 || raw === "1") return "PROCEED";
-  if (raw === 2 || raw === "2") return "PARTIAL";
-  if (raw === 0 || raw === "0") return "STOP";
+  if (raw === TrafficSignalWireNumbers.code.SIGNAL_PROCEED || raw === String(TrafficSignalWireNumbers.code.SIGNAL_PROCEED)) return "PROCEED";
+  if (raw === TrafficSignalWireNumbers.code.SIGNAL_PARTIAL || raw === String(TrafficSignalWireNumbers.code.SIGNAL_PARTIAL)) return "PARTIAL";
+  if (raw === TrafficSignalWireNumbers.code.SIGNAL_STOP || raw === String(TrafficSignalWireNumbers.code.SIGNAL_STOP)) return "STOP";
   const s = String(raw ?? "").toUpperCase();
-  if (s === "PROCEED" || s === "SIGNAL_PROCEED") return "PROCEED";
-  if (s === "PARTIAL" || s === "SIGNAL_PARTIAL") return "PARTIAL";
+  if (TrafficSignals.is(s)) return s;
+  if (s === "PROCEED" || s === TrafficSignalWireNames.code.SIGNAL_PROCEED) return "PROCEED";
+  if (s === "PARTIAL" || s === TrafficSignalWireNames.code.SIGNAL_PARTIAL) return "PARTIAL";
   return "STOP";
 }
 
@@ -52,6 +53,22 @@ export type LeaseSnapshot = {
   /** Remaining lease duration in ms (robot clocks from receive time). */
   leaseDurationMs: number;
   zoneId: ZoneId;
+  reason: string;
+  /** Identity of the STOP decision this grant acknowledges, when present. */
+  stopId?: string;
+  stopGeneration?: number;
+};
+
+export type TrafficStopDecision = CatalogTrafficStopDecision;
+export type TrafficStopCheck = {
+  robotId: string;
+  stopId: string;
+  stopGeneration: number;
+  controlEpoch: number;
+  sessionId: string;
+};
+export type TrafficStopStatus = TrafficStopCheck & {
+  decision: TrafficStopDecision;
   reason: string;
 };
 
@@ -69,13 +86,13 @@ export type LeaseReleaseBody = {
   retained: Corridor;
 };
 
-export type EvasionMode = "REROUTE" | "VACATE";
+export type EvasionMode = CatalogEvasionMode;
 
 export type TrafficPlanAction =
-  | { kind: "grant"; robotId: string; grant: LeaseSnapshot }
-  | { kind: "bid_request"; robotId: string; zoneId: ZoneId; windowMs: number }
+  | { kind: typeof TrafficPlanActionKinds.code.grant; robotId: string; grant: LeaseSnapshot }
+  | { kind: typeof TrafficPlanActionKinds.code.bid_request; robotId: string; zoneId: ZoneId; windowMs: number }
   | {
-      kind: "evasion_request";
+      kind: typeof TrafficPlanActionKinds.code.evasion_request;
       robotId: string;
       zoneId: ZoneId;
       roundId: string;
@@ -85,15 +102,15 @@ export type TrafficPlanAction =
       breadcrumbHint: string[];
       deadlineMs: number;
     }
-  | { kind: "zone_update"; robotId: string; zoneId: ZoneId; state: string }
-  | { kind: "set_status"; robotId: string; trafficStatus: TrafficStatus };
+  | { kind: typeof TrafficPlanActionKinds.code.zone_update; robotId: string; zoneId: ZoneId; state: ZoneUpdateState }
+  | { kind: typeof TrafficPlanActionKinds.code.set_status; robotId: string; trafficStatus: TrafficStatus };
 
 /** Opaque policy id so FMS can swap implementations later. */
-export type TrafficPolicyId = "corridor_lease_v0" | "local_plan_v1";
+export type TrafficPolicyId = CatalogTrafficPolicyId;
 
 export function parseTrafficPolicyId(raw: unknown): TrafficPolicyId {
   const s = String(raw ?? "");
-  if (s === "corridor_lease_v0" || s === "local_plan_v1") return s;
+  if (TrafficPolicyIds.is(s)) return s;
   return "local_plan_v1";
 }
 

@@ -1,49 +1,31 @@
+import {
+  CorridorReferencePoints, EdgeReleaseLossBehaviors, SceneZoneKinds, VdaZoneKinds,
+} from "./config/index.ts";
+import type {
+  CorridorReferencePoint, DirectedLimitation, EdgeReleaseLossBehavior,
+  ObstacleKind as CatalogObstacleKind, ResourceFamily as CatalogResourceFamily,
+  SceneKind as CatalogSceneKind, StationKind, TeleporterKind, VdaKind as CatalogVdaKind,
+  ZoneKind as CatalogZoneKind, ZoneReleaseLossBehavior,
+} from "./config/index.ts";
+
 export type Point = { x: number; y: number };
 export type Pose = Point & { theta: number };
+export type TeleporterEndpoint = { id: string; mapId: string; position: Point; entryTheta: number; exitTheta: number; occupancyPolygon: Point[]; clearingPoint: Point };
+export type Teleporter = { id: string; type: TeleporterKind; name: string; endpoints: [TeleporterEndpoint, TeleporterEndpoint]; enabled: boolean; revision: number };
 
-export type SceneKind = "waypoint" | "charger" | "obstacle" | "forbidden" | "prefer" | "avoid" | "corridor" | "complex";
+export type SceneKind = CatalogSceneKind;
 
-export type VdaKind =
-  | "node"
-  | "edge"
-  | "station"
-  | "blocked"
-  | "release"
-  | "line_guided"
-  | "speed_limit"
-  | "priority"
-  | "penalty"
-  | "directed"
-  | "bidirected"
-  | "replanning"
-  | "action_zone"
-  | "portal"
-  | "rail";
+export type VdaKind = CatalogVdaKind;
 
-export type ResourceFamily = "scene" | "vda";
+export type ResourceFamily = CatalogResourceFamily;
 
-export type ObstacleKind = "triangle" | "square" | "circle";
+export type ObstacleKind = CatalogObstacleKind;
 
 export type SceneWaypoint = Pose & { id: string; name?: string };
 export type SceneCharger = Pose & { id: string; name?: string };
 export type SceneObstacle = Pose & { id: string; name?: string; kind: ObstacleKind; size: number };
 
-export type ZoneKind =
-  | "forbidden"
-  | "prefer"
-  | "avoid"
-  | "blocked"
-  | "release"
-  | "line_guided"
-  | "speed_limit"
-  | "priority"
-  | "penalty"
-  | "directed"
-  | "bidirected"
-  | "replanning"
-  | "action_zone"
-  | "corridor"
-  | "complex";
+export type ZoneKind = CatalogZoneKind;
 
 export type ZoneResource = {
   id: string;
@@ -57,8 +39,8 @@ export type ZoneResource = {
   maximumSpeed?: number;
   capacity?: number;
   direction?: number;
-  directedLimitation?: "SOFT" | "RESTRICTED" | "STRICT";
-  releaseLossBehavior?: "STOP" | "CONTINUE" | "EVACUATE";
+  directedLimitation?: DirectedLimitation;
+  releaseLossBehavior?: ZoneReleaseLossBehavior;
 };
 
 export type GraphNode = Pose & {
@@ -73,9 +55,9 @@ export type GraphNode = Pose & {
 export type EdgeCorridor = {
   leftWidth: number;
   rightWidth: number;
-  corridorReferencePoint: "KINEMATIC_CENTER" | "CONTOUR";
+  corridorReferencePoint: CorridorReferencePoint;
   releaseRequired: boolean;
-  releaseLossBehavior: "STOP" | "RETURN";
+  releaseLossBehavior: EdgeReleaseLossBehavior;
 };
 
 export type GraphEdge = {
@@ -92,7 +74,7 @@ export type GraphEdge = {
 export type VdaStation = Pose & {
   id: string;
   name: string;
-  kind: "charger" | "pick_drop" | "wait" | "other";
+  kind: StationKind;
   interactionNodeIds: string[];
 };
 
@@ -127,24 +109,13 @@ export type SemanticSnapshot = {
   rails: Rail[];
 };
 
-export const SCENE_ZONE_KINDS: ZoneKind[] = ["forbidden", "prefer", "avoid", "corridor", "complex"];
-export const VDA_ZONE_KINDS: ZoneKind[] = [
-  "blocked",
-  "release",
-  "line_guided",
-  "speed_limit",
-  "priority",
-  "penalty",
-  "directed",
-  "bidirected",
-  "replanning",
-  "action_zone",
-];
+export const SCENE_ZONE_KINDS: ZoneKind[] = [...SceneZoneKinds.values];
+export const VDA_ZONE_KINDS: ZoneKind[] = [...VdaZoneKinds.values];
 
 export const DEFAULT_EDGE_CORRIDOR: EdgeCorridor = {
   leftWidth: 0.6,
   rightWidth: 0.6,
-  corridorReferencePoint: "KINEMATIC_CENTER",
+  corridorReferencePoint: CorridorReferencePoints.code.KINEMATIC_CENTER,
   releaseRequired: false,
-  releaseLossBehavior: "STOP",
+  releaseLossBehavior: EdgeReleaseLossBehaviors.code.STOP,
 };

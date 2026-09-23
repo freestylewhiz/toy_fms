@@ -3,20 +3,23 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   FREE_LUMA_THRESHOLD,
+  ACTIVE_MAP,
   MAP_HEIGHT,
   MAP_WIDTH,
   PLAN_INFLATE_PX,
   ROBOT_LENGTH_PX,
   ROBOT_WIDTH_PX,
+  switchActiveMap,
 } from "./constants.ts";
+import { runtimeMap } from "./maps.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const RESOURCES_DIR = join(here, "../resources");
-export const MAP_PNG_PATH = join(RESOURCES_DIR, "maps/yard.png");
-export const OCCUPANCY_PATH = join(RESOURCES_DIR, "maps/occupancy.bin");
-export const OCCUPANCY_INFLATED_PATH = join(RESOURCES_DIR, "maps/occupancy_inflated.bin");
-export const OCCUPANCY_JSON_PATH = join(RESOURCES_DIR, "maps/occupancy.json");
-export const SEED_PATH = join(RESOURCES_DIR, "maps/seed.json");
+export let MAP_PNG_PATH = join(RESOURCES_DIR, 'maps', `${ACTIVE_MAP.image}`);
+export let OCCUPANCY_PATH = join(RESOURCES_DIR, 'maps', `${ACTIVE_MAP.prefix}occupancy.bin`);
+export let OCCUPANCY_INFLATED_PATH = join(RESOURCES_DIR, 'maps', `${ACTIVE_MAP.prefix}occupancy_inflated.bin`);
+export let OCCUPANCY_JSON_PATH = join(RESOURCES_DIR, 'maps', `${ACTIVE_MAP.prefix}occupancy.json`);
+export let SEED_PATH = join(RESOURCES_DIR, 'maps', `${ACTIVE_MAP.prefix}seed.json`);
 
 export type Seed = {
   waypoints: { id: string; x: number; y: number; theta: number }[];
@@ -25,6 +28,40 @@ export type Seed = {
 };
 
 let occ: Uint8Array | null = null;
+
+export type MapContext = { id: string; width: number; height: number; occupancy: Uint8Array; inflated: Uint8Array };
+
+/** Read and validate a destination context without changing the active map. */
+export function prepareMapContext(id: string): MapContext {
+  const map = runtimeMap(id);
+  const occupancyPath = join(RESOURCES_DIR, 'maps', `${map.prefix}occupancy.bin`);
+  const inflatedPath = join(RESOURCES_DIR, 'maps', `${map.prefix}occupancy_inflated.bin`);
+  const raw = new Uint8Array(readFileSync(occupancyPath));
+  if (raw.length !== map.width * map.height) throw new Error(`occupancy.bin size ${raw.length}, expected ${map.width * map.height}`);
+  let inflated: Uint8Array;
+  if (existsSync(inflatedPath)) {
+    const value = new Uint8Array(readFileSync(inflatedPath));
+    if (value.length !== map.width * map.height) throw new Error(`inflated occupancy size ${value.length}, expected ${map.width * map.height}`);
+    inflated = value;
+  } else throw new Error(`missing inflated occupancy asset for ${map.id}`);
+  return { id: map.id, width: map.width, height: map.height, occupancy: raw, inflated };
+}
+
+export function commitMapContext(context: MapContext): void {
+  const current = runtimeMap(context.id);
+  switchActiveMap(current.id);
+  MAP_PNG_PATH = join(RESOURCES_DIR, 'maps', current.image);
+  OCCUPANCY_PATH = join(RESOURCES_DIR, 'maps', `${current.prefix}occupancy.bin`);
+  OCCUPANCY_INFLATED_PATH = join(RESOURCES_DIR, 'maps', `${current.prefix}occupancy_inflated.bin`);
+  OCCUPANCY_JSON_PATH = join(RESOURCES_DIR, 'maps', `${current.prefix}occupancy.json`);
+  SEED_PATH = join(RESOURCES_DIR, 'maps', `${current.prefix}seed.json`);
+  occ = context.occupancy;
+  inflatedCache = context.inflated;
+  extraBlocked = null;
+  extraBlockedRevision++;
+}
+
+export function switchMapContext(id: string): void { commitMapContext(prepareMapContext(id)); }
 
 export function loadOccupancy(): Uint8Array {
   if (occ) return occ;
@@ -128,9 +165,19 @@ export function isInflatedFree(x: number, y: number): boolean {
 }
 
 let extraBlocked: Uint8Array | null = null;
+let extraBlockedRevision = 0;
 
 export function setExtraBlocked(grid: Uint8Array | null): void {
+  if (grid && grid.length !== MAP_WIDTH * MAP_HEIGHT) {
+    throw new Error(`extra blocked mask size ${grid.length}, expected ${MAP_WIDTH * MAP_HEIGHT}`);
+  }
   extraBlocked = grid;
+  extraBlockedRevision++;
+}
+
+/** Current dynamic mask and a monotonically increasing refresh token. */
+export function extraBlockedState(): { grid: Uint8Array | null; revision: number } {
+  return { grid: extraBlocked, revision: extraBlockedRevision };
 }
 
 export function isPlanFree(x: number, y: number): boolean {

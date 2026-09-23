@@ -124,7 +124,7 @@ export function reverseAlongTrail(
   pose: PlanPoint,
   distancePx: number,
 ): PlanPoint[] {
-  if (trail.length < 2 || distancePx <= 0) return [];
+  if (trail.length < 1 || distancePx <= 0) return [];
   const out: PlanPoint[] = [{ x: pose.x, y: pose.y }];
   let traveled = 0;
   let px = pose.x;
@@ -144,6 +144,75 @@ export function reverseAlongTrail(
     py = t.y;
   }
   return out.length > 1 ? out : [];
+}
+
+/** Split a polyline into consecutive trials no longer than `stepPx`, preserving corners. */
+export function splitPathIntoSteps(path: PlanPoint[], stepPx: number): PlanPoint[][] {
+  if (path.length < 2 || !Number.isFinite(stepPx) || stepPx <= 0) return [];
+  const steps: PlanPoint[][] = [];
+  let current: PlanPoint[] = [{ ...path[0] }];
+  let remaining = stepPx;
+  for (let i = 1; i < path.length; i++) {
+    let start = path[i - 1];
+    const end = path[i];
+    let segment = Math.hypot(end.x - start.x, end.y - start.y);
+    if (segment < 1e-9) continue;
+    while (segment >= remaining - 1e-9) {
+      const u = remaining / segment;
+      const split = { x: start.x + (end.x - start.x) * u, y: start.y + (end.y - start.y) * u };
+      current.push(split);
+      steps.push(current);
+      current = [{ ...split }];
+      start = split;
+      segment = Math.hypot(end.x - start.x, end.y - start.y);
+      remaining = stepPx;
+    }
+    if (segment > 1e-9) {
+      current.push({ ...end });
+      remaining -= segment;
+    }
+  }
+  if (current.length > 1) steps.push(current);
+  return steps;
+}
+
+/** Return the unconsumed older portion of a newest-to-oldest route. */
+export function pathAfterDistance(path: PlanPoint[], distancePx: number): PlanPoint[] {
+  if (path.length < 2) return [];
+  let remaining = Math.max(0, distancePx);
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1], b = path[i];
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    if (length < 1e-9) continue;
+    if (remaining < length) {
+      const u = remaining / length;
+      return [{ x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u }, ...path.slice(i)];
+    }
+    remaining -= length;
+  }
+  return [];
+}
+
+/** Distance from the start of a polyline to its closest point to `pose`. */
+export function distanceAlongPathToClosestPoint(path: PlanPoint[], pose: PlanPoint): number {
+  let prefix = 0;
+  let bestDistance = Infinity;
+  let bestAlong = 0;
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1], b = path[i];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const length2 = dx * dx + dy * dy;
+    const length = Math.sqrt(length2);
+    if (length < 1e-9) continue;
+    const t = Math.max(0, Math.min(1, ((pose.x - a.x) * dx + (pose.y - a.y) * dy) / length2));
+    const distance = Math.hypot(pose.x - (a.x + dx * t), pose.y - (a.y + dy * t));
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestAlong = prefix + length * t;
+    }
+    prefix += length;
+  }
+  return bestAlong;
 }
 
 /** Distance from pose to closest point on polyline. */

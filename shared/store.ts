@@ -3,6 +3,8 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadSeed } from "./occupancy.ts";
+import { StationKinds } from "./config/index.ts";
+import { ACTIVE_MAP, MAP_ID } from './constants.ts';
 import {
   DEFAULT_EDGE_CORRIDOR,
   type GraphEdge,
@@ -18,10 +20,9 @@ import {
 } from "./semantic.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-export const DATA_DIR = join(here, "../data");
+export const DATA_DIR = process.env.FMS_DATA_ROOT ? join(process.env.FMS_DATA_ROOT, ACTIVE_MAP.dataDirectory) : join(here, '../data', ACTIVE_MAP.dataDirectory);
 export const SQLITE_PATH = join(DATA_DIR, "editor.sqlite");
 
-const MAP_ID = "yard";
 const MAP_VERSION = "1";
 
 function now(): number {
@@ -319,7 +320,7 @@ function rowToStation(r: Record<string, unknown>): VdaStation {
     y: Number(r.y),
     theta: Number(r.theta) || 0,
     name: String(r.name ?? ""),
-    kind: (r.kind as VdaStation["kind"]) || "other",
+    kind: StationKinds.is(r.kind) ? r.kind : StationKinds.code.other,
     interactionNodeIds: parseJson(r.interaction_json, []),
   };
 }

@@ -21,6 +21,8 @@ import type {
   TrafficPlanAction,
   TrafficStatus,
   ZoneId,
+  TrafficStopCheck,
+  TrafficStopStatus,
 } from "../../../../shared/traffic/types.ts";
 import type {
   TrafficPolicy,
@@ -29,6 +31,9 @@ import type {
 } from "../TrafficPolicy.ts";
 
 type PairKey = string;
+type StopRecord = { stopId: string; generation: number; reason: string; pair?: PairKey; createdAt: number };
+type CompletedStop = { record: StopRecord; sessionId: string; controlEpoch: number };
+type EvasionTarget = { robotId: string; round: number; roundId: string; deadlineAt: number; controlEpoch?: number; sessionId?: string };
 
 function pairKey(a: string, b: string): PairKey {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
@@ -41,8 +46,13 @@ function hashSeed(robotId: string): number {
 }
 
 function localOf(r: TrafficWorldSnapshot["robots"][number]): { x: number; y: number }[] {
+  if (r.operatorPaused) return [{ x: r.x, y: r.y }];
   if (r.localPath && r.localPath.length) return r.localPath;
   return sampleLocalPlan(r.path, 0, { x: r.x, y: r.y });
+}
+
+function currentLocalOf(r: TrafficWorldSnapshot["robots"][number]): { x: number; y: number }[] | null {
+  return r.localPath && r.localPath.length ? r.localPath : null;
 }
 
 function emptyHeld(): Corridor {
@@ -52,26 +62,31 @@ function emptyHeld(): Corridor {
 export class LocalPlanPolicy implements TrafficPolicy {
   readonly id = "local_plan_v1" as const;
   private lastPose = new Map<string, { x: number; y: number; atMs: number }>();
+  private lastPlan = new Map<string, string>();
   private stuckSince = new Map<PairKey, number>();
-  private evasionTarget = new Map<PairKey, { robotId: string; round: number }>();
+  private evasionTarget = new Map<PairKey, EvasionTarget>();
   /** After VACATE starts, keep the winner stopped until the loser's pose clears the winner plan. */
-  private vacating = new Map<PairKey, { loser: string; winner: string }>();
+  private vacating = new Map<PairKey, { loser: string; winner: string; requirePlanChange?: boolean; previousPlan?: string }>();
   private evasionSeq = 0;
+  private stopSeq = 0;
+  private stopGeneration = new Map<string, number>();
+  private activeStops = new Map<string, Map<string, StopRecord>>();
+  private completedStops = new Map<string, CompletedStop[]>();
 
   constructor(private readonly ctx: TrafficPolicyContext) {}
 
-  onRobotConnected(_robotId: string): void {}
+  onRobotConnected(robotId: string): void {
+    // A new authenticated session must never inherit a prior token. Pair
+    // state remains, so the next request/tick recreates a fresh generation.
+    this.activeStops.delete(robotId);
+    this.completedStops.delete(robotId);
+  }
 
   onRobotDisconnected(robotId: string): void {
     this.ctx.clearRobot(robotId);
     this.lastPose.delete(robotId);
-    for (const k of [...this.stuckSince.keys()]) {
-      if (k.split("|").includes(robotId)) {
-        this.stuckSince.delete(k);
-        this.evasionTarget.delete(k);
-        this.vacating.delete(k);
-      }
-    }
+    // Keep pair STOP records and the last body as an obstacle. A session loss
+    // cannot prove that the physical body cleared the conflict.
   }
 
   onLeaseRequest(
@@ -79,7 +94,30 @@ export class LocalPlanPolicy implements TrafficPolicy {
     req: LeaseRequestBody,
     world: TrafficWorldSnapshot,
   ): TrafficPlanAction[] {
-    // v1 does not lease space. Always PROCEED so leftover v0 clients keep moving.
+    let heldStop = this.activeStops.get(robotId);
+    if (!heldStop?.size) {
+      for (const [pair, v] of this.vacating) {
+        if (v.winner === robotId) {
+          this.ensureStop(robotId, `pair:${pair}`, pair);
+          break;
+        }
+      }
+      if (!this.activeStops.get(robotId)?.size) {
+        for (const [pair, v] of this.evasionTarget) {
+          const winner = pair.split("|").find((id) => id !== v.robotId);
+          if (winner === robotId) {
+            this.ensureStop(robotId, `pair:${pair}`, pair);
+            break;
+          }
+        }
+      }
+      heldStop = this.activeStops.get(robotId);
+    }
+    if (heldStop?.size) {
+      const stop = [...heldStop.values()][0];
+      return [this.stopGrant(robotId, stop, req.requestId), { kind: "set_status", robotId, trafficStatus: "stop" }];
+    }
+    // v1 does not lease space when no active STOP reason exists.
     const leaseId = `open-${robotId}`;
     this.ctx.commit(robotId, leaseId, req.wanted, world.nowMs + LEASE_MS, "");
     return [
@@ -111,24 +149,31 @@ export class LocalPlanPolicy implements TrafficPolicy {
   onEvasionReply(robotId: string, payload: Record<string, unknown>): TrafficPlanAction[] {
     const result = String(payload.result ?? "").toUpperCase();
     const actions: TrafficPlanAction[] = [];
-    let pair: PairKey | undefined;
-    for (const [k, t] of this.evasionTarget) {
-      if (t.robotId === robotId) {
-        pair = k;
-        break;
-      }
-    }
-    const others = pair ? pair.split("|").filter((id) => id !== robotId) : [];
+    const suppliedZone = String(payload.zone_id ?? "");
+    const suppliedRound = String(payload.round_id ?? "");
+    const target = this.evasionTarget.get(suppliedZone);
+    const pair = target?.robotId === robotId ? suppliedZone : undefined;
+    if (!pair || !target || suppliedRound !== target.roundId ||
+      (target.sessionId != null && String(payload.session_id ?? "") !== target.sessionId) ||
+      (target.controlEpoch != null && Number(payload.control_epoch) !== target.controlEpoch)) return [];
+    const others = pair.split("|").filter((id) => id !== robotId);
 
     if (result === "REROUTE" || result === "OK") {
       if (pair) {
+        const loser = robotId;
+        const winner = pair.split("|").find((id) => id !== robotId) ?? "";
+        this.vacating.set(pair, {
+          loser,
+          winner,
+          requirePlanChange: true,
+          previousPlan: this.planFingerprint(loser),
+        });
         this.evasionTarget.delete(pair);
-        this.stuckSince.delete(pair);
-        this.vacating.delete(pair);
       }
       actions.push({ kind: "set_status", robotId, trafficStatus: "evade" });
-      for (const wid of others) actions.push(...this.resumePeer(wid, pair ?? ""));
-      console.log(`[traffic-v1] evade ${result} from ${robotId} → resume ${others.join(",")}`);
+      // A reply acknowledges the request only. Current pose and local-plan
+      // telemetry must prove clearance before the winner is resumed.
+      console.log(`[traffic-v1] evade ${result} from ${robotId}; awaiting fresh clearance`);
       return actions;
     }
 
@@ -149,12 +194,14 @@ export class LocalPlanPolicy implements TrafficPolicy {
       const cur = this.evasionTarget.get(pair);
       const round = (cur?.round ?? 1) + 1;
       if (round <= MAX_REROUTE_ROUNDS) {
-        this.evasionTarget.set(pair, { robotId, round });
+        const roundId = `e${++this.evasionSeq}`;
+        const prior = this.evasionTarget.get(pair);
+        this.evasionTarget.set(pair, { robotId, round, roundId, deadlineAt: Date.now() + EVASION_DEADLINE_MS * 6, controlEpoch: prior?.controlEpoch, sessionId: prior?.sessionId });
         actions.push({
           kind: "evasion_request",
           robotId,
           zoneId: pair,
-          roundId: `e${++this.evasionSeq}`,
+          roundId,
           leaseId: "",
           releaseHint: emptyHeld(),
           mode: "VACATE",
@@ -172,7 +219,7 @@ export class LocalPlanPolicy implements TrafficPolicy {
 
   tick(world: TrafficWorldSnapshot): TrafficPlanAction[] {
     this.updateProgress(world);
-    const actions = [...this.watchVacateClearance(world), ...this.watchDeadlock(world)];
+    const actions = [...this.restorePairStops(world), ...this.watchEvasionTimeouts(world), ...this.watchVacateClearance(world), ...this.watchDeadlock(world)];
     const busy = new Set<string>();
     for (const t of this.evasionTarget.values()) busy.add(t.robotId);
     for (const v of this.vacating.values()) {
@@ -196,6 +243,7 @@ export class LocalPlanPolicy implements TrafficPolicy {
   private updateProgress(world: TrafficWorldSnapshot): void {
     for (const r of world.robots) {
       if (!r.connected) continue;
+      this.lastPlan.set(r.robotId, JSON.stringify(r.localPath ?? []));
       const prev = this.lastPose.get(r.robotId);
       if (!prev || Math.hypot(r.x - prev.x, r.y - prev.y) >= PROGRESS_EPSILON_PX) {
         this.lastPose.set(r.robotId, { x: r.x, y: r.y, atMs: world.nowMs });
@@ -209,15 +257,15 @@ export class LocalPlanPolicy implements TrafficPolicy {
     for (const [key, v] of [...this.vacating]) {
       const loser = byId.get(v.loser);
       const winner = byId.get(v.winner);
-      if (!loser || !winner || !loser.connected) {
-        if (winner?.connected) actions.push(...this.resumePeer(v.winner, key));
-        this.vacating.delete(key);
+      if (!loser || !winner || !loser.connected || !winner.connected) {
+        // A disconnected peer remains an unknown physical obstacle.
         continue;
       }
-      const winnerPlan = localOf(winner);
-      const clear =
-        distToPlan({ x: loser.x, y: loser.y }, winnerPlan) >= TRAFFIC_SEP_PX + 8 ||
-        !plansOverlap(localOf(loser), winnerPlan, TRAFFIC_SEP_PX);
+      const winnerPlan = currentLocalOf(winner);
+      if (!winnerPlan) continue;
+      const clear = this.isPairClear(key, world) &&
+        distToPlan({ x: loser.x, y: loser.y }, winnerPlan) >= TRAFFIC_SEP_PX + 8 &&
+        (!v.requirePlanChange || this.planFingerprint(v.loser) !== v.previousPlan);
       if (!clear) continue;
       actions.push(...this.resumePeer(v.winner, key));
       this.vacating.delete(key);
@@ -249,13 +297,16 @@ export class LocalPlanPolicy implements TrafficPolicy {
         }
         const loser = hashSeed(a.robotId) <= hashSeed(b.robotId) ? a.robotId : b.robotId;
         const winner = loser === a.robotId ? b.robotId : a.robotId;
-        this.evasionTarget.set(key, { robotId: loser, round: 1 });
+        const roundId = `e${++this.evasionSeq}`;
+        this.evasionTarget.set(key, { robotId: loser, round: 1, roundId, deadlineAt: world.nowMs + EVASION_DEADLINE_MS * 6,
+          controlEpoch: a.robotId === loser ? a.controlEpoch : b.controlEpoch,
+          sessionId: a.robotId === loser ? a.sessionId : b.sessionId });
         console.log(`[traffic-v1] E2 REROUTE → ${loser} pair=${key}`);
         actions.push({
           kind: "evasion_request",
           robotId: loser,
           zoneId: key,
-          roundId: `e${++this.evasionSeq}`,
+          roundId,
           leaseId: "",
           releaseHint: emptyHeld(),
           mode: "REROUTE",
@@ -270,25 +321,22 @@ export class LocalPlanPolicy implements TrafficPolicy {
   }
 
   private holdPeer(robotId: string, pair: PairKey): TrafficPlanAction[] {
+    const stop = this.ensureStop(robotId, `pair:${pair}`, pair);
     return [
-      {
-        kind: "grant",
-        robotId,
-        grant: {
-          leaseId: `open-${robotId}`,
-          signal: "STOP",
-          held: emptyHeld(),
-          leaseDurationMs: LEASE_MS,
-          zoneId: pair,
-          reason: `hold|v1 yield`,
-        },
-      },
+      this.stopGrant(robotId, stop, "hold"),
       { kind: "set_status", robotId, trafficStatus: "stop" },
       { kind: "zone_update", robotId, zoneId: pair, state: "hold" },
     ];
   }
 
   private resumePeer(robotId: string, pair: PairKey): TrafficPlanAction[] {
+    const active = this.activeStops.get(robotId);
+    if (active?.size) {
+      const stop = [...active.values()][0];
+      // Keep the token alive until the robot's authenticated poll receives
+      // RESUME. A generic PROCEED grant cannot recover a dropped status.
+      return [this.stopGrant(robotId, stop, "hold"), { kind: "set_status", robotId, trafficStatus: "stop" }, { kind: "zone_update", robotId, zoneId: pair, state: "resume" }];
+    }
     return [
       {
         kind: "grant",
@@ -311,6 +359,146 @@ export class LocalPlanPolicy implements TrafficPolicy {
     const p = this.lastPose.get(robotId);
     if (!p) return false;
     return nowMs - p.atMs >= DEADLOCK_CONFIRM_MS;
+  }
+
+  onTrafficStopCheck(robotId: string, check: TrafficStopCheck, world: TrafficWorldSnapshot): TrafficStopStatus {
+    const active = this.activeStops.get(robotId);
+    const matching = [...(active?.values() ?? [])].find((s) => s.stopId === check.stopId && s.generation === check.stopGeneration);
+    for (const stop of [...(active?.values() ?? [])]) {
+      if (stop.pair && this.isPairClear(stop.pair, world)) {
+        this.rememberCompleted(robotId, stop, check);
+        this.clearStop(robotId, stop.reason);
+        this.clearPairState(stop.pair);
+      }
+    }
+    const remaining = this.activeStops.get(robotId);
+    if (remaining?.size) {
+      const latest = [...remaining.values()].sort((a, b) => b.generation - a.generation)[0];
+      const token = latest.generation > check.stopGeneration ? { stopId: latest.stopId, stopGeneration: latest.generation } : check;
+      return { ...check, ...token, decision: "STOP", reason: [...remaining.values()].map((s) => s.reason).join(",") || "active traffic stop" };
+    }
+    const completed = this.completedStops.get(robotId)?.find((x) => x.record.stopId === check.stopId && x.record.generation === check.stopGeneration && x.sessionId === check.sessionId && x.controlEpoch === check.controlEpoch);
+    if (completed?.record.pair && !this.isPairClear(completed.record.pair, world)) {
+      const stop = this.ensureStop(robotId, completed.record.reason, completed.record.pair);
+      return { ...check, stopId: stop.stopId, stopGeneration: stop.generation, decision: "STOP", reason: "conflict returned; new stop generation" };
+    }
+    if (matching || completed) return { ...check, decision: "RESUME", reason: "stop cleared after current scene check" };
+    // An unknown token cannot authorize motion. Keep the exact token in the
+    // response so the robot can discard it and poll with its current grant.
+    return { ...check, decision: "STOP", reason: "unknown stop identity" };
+  }
+
+  getTrafficStopGrant(robotId: string): TrafficPlanAction | undefined {
+    const active = this.activeStops.get(robotId);
+    const stop = active && [...active.values()].sort((a, b) => b.generation - a.generation)[0];
+    return stop ? this.stopGrant(robotId, stop, "recovery") : undefined;
+  }
+
+  private ensureStop(robotId: string, reason: string, pair?: PairKey): StopRecord {
+    const existing = this.activeStops.get(robotId)?.get(reason);
+    if (existing) return existing;
+    const generation = (this.stopGeneration.get(robotId) ?? 0) + 1;
+    this.stopGeneration.set(robotId, generation);
+    const record = { stopId: `stop-${robotId}-${++this.stopSeq}`, generation, reason, pair, createdAt: Date.now() };
+    const map = this.activeStops.get(robotId) ?? new Map<string, StopRecord>();
+    map.set(reason, record);
+    this.activeStops.set(robotId, map);
+    return record;
+  }
+
+  private clearStop(robotId: string, reason: string): void {
+    const map = this.activeStops.get(robotId);
+    map?.delete(reason);
+    if (map && map.size === 0) this.activeStops.delete(robotId);
+  }
+
+  private rememberCompleted(robotId: string, record: StopRecord, check: TrafficStopCheck): void {
+    const entries = this.completedStops.get(robotId) ?? [];
+    entries.push({ record, sessionId: check.sessionId, controlEpoch: check.controlEpoch });
+    while (entries.length > 16) entries.shift();
+    this.completedStops.set(robotId, entries);
+  }
+
+  private stopGrant(robotId: string, stop: StopRecord, requestId: string): TrafficPlanAction {
+    return { kind: "grant", robotId, grant: { leaseId: `open-${robotId}`, signal: "STOP", held: emptyHeld(), leaseDurationMs: LEASE_MS, zoneId: stop.pair ?? "", reason: `${requestId}|${stop.reason}`, stopId: stop.stopId, stopGeneration: stop.generation } };
+  }
+
+  private planFingerprint(robotId: string): string {
+    return this.lastPlan.get(robotId) ?? "";
+  }
+
+  private freshForClearance(world: TrafficWorldSnapshot, r: TrafficWorldSnapshot["robots"][number]): boolean {
+    const maxAge = EVASION_DEADLINE_MS * 6;
+    if (r.observedAtMs == null || r.localPlanObservedAtMs == null) return false;
+    if (!Number.isFinite(r.observedAtMs) || !Number.isFinite(r.localPlanObservedAtMs)) return false;
+    if (r.observedAtMs != null && world.nowMs - r.observedAtMs > maxAge) return false;
+    if (r.localPlanObservedAtMs != null && world.nowMs - r.localPlanObservedAtMs > maxAge) return false;
+    return true;
+  }
+
+  private isPairClear(pair: PairKey, world: TrafficWorldSnapshot): boolean {
+    const [aId, bId] = pair.split("|");
+    const a = world.robots.find((r) => r.robotId === aId);
+    const b = world.robots.find((r) => r.robotId === bId);
+    if (!a || !b || !a.connected || !b.connected || a.fmsControlState === "disabled" || b.fmsControlState === "disabled" ||
+      a.controlReady === false || b.controlReady === false || a.poseObserved === false || b.poseObserved === false) return false;
+    if (!this.freshForClearance(world, a) || !this.freshForClearance(world, b)) return false;
+    const pa = currentLocalOf(a), pb = currentLocalOf(b);
+    if (!pa || !pb) return false;
+    if (!this.validPlan(a, pa) || !this.validPlan(b, pb)) return false;
+    if (Math.hypot(a.x - b.x, a.y - b.y) < TRAFFIC_SEP_PX + 8 ||
+      distToPlan({ x: a.x, y: a.y }, pb) < TRAFFIC_SEP_PX + 8 ||
+      distToPlan({ x: b.x, y: b.y }, pa) < TRAFFIC_SEP_PX + 8 ||
+      plansOverlap(pa, pb, TRAFFIC_SEP_PX)) return false;
+    for (const other of world.robots) {
+      if (other.robotId === aId || other.robotId === bId) continue;
+      if (other.poseObserved === false) continue;
+      if (![other.x, other.y].every(Number.isFinite)) return false;
+      if (other.connected && !this.freshForClearance(world, other)) return false;
+      const bodyNear = Math.min(Math.hypot(other.x - a.x, other.y - a.y), Math.hypot(other.x - b.x, other.y - b.y)) <= TRAFFIC_SEP_PX + 16;
+      const routeNear = Math.min(distToPlan({ x: other.x, y: other.y }, pa), distToPlan({ x: other.x, y: other.y }, pb)) <= TRAFFIC_SEP_PX + 8;
+      const po = currentLocalOf(other);
+      if (!other.connected && (bodyNear || routeNear)) return false;
+      if (other.connected && (bodyNear || routeNear || !po || !this.validPlan(other, po) || plansOverlap(po, pa, TRAFFIC_SEP_PX) || plansOverlap(po, pb, TRAFFIC_SEP_PX))) return false;
+    }
+    return true;
+  }
+
+  private validPlan(r: TrafficWorldSnapshot["robots"][number], plan: { x: number; y: number }[]): boolean {
+    return plan.length > 0 && plan.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)) &&
+      Math.hypot(plan[0].x - r.x, plan[0].y - r.y) <= TRAFFIC_SEP_PX;
+  }
+
+  private restorePairStops(world: TrafficWorldSnapshot): TrafficPlanAction[] {
+    const actions: TrafficPlanAction[] = [];
+    const restore = (pair: PairKey, winner: string) => {
+      if (!this.activeStops.get(winner)?.size) actions.push(...this.holdPeer(winner, pair));
+    };
+    for (const [pair, target] of this.evasionTarget) {
+      const winner = pair.split("|").find((id) => id !== target.robotId);
+      if (winner && world.robots.some(r => r.robotId === winner)) restore(pair, winner);
+    }
+    for (const [pair, state] of this.vacating) restore(pair, state.winner);
+    return actions;
+  }
+
+  private clearPairState(pair: PairKey): void {
+    this.evasionTarget.delete(pair);
+    this.vacating.delete(pair);
+    this.stuckSince.delete(pair);
+  }
+
+  private watchEvasionTimeouts(world: TrafficWorldSnapshot): TrafficPlanAction[] {
+    const actions: TrafficPlanAction[] = [];
+    for (const [pair, target] of [...this.evasionTarget]) {
+      if (world.nowMs < target.deadlineAt) continue;
+      this.evasionTarget.delete(pair);
+      const winner = pair.split("|").find((id) => id !== target.robotId);
+      if (winner) actions.push(...this.holdPeer(winner, pair));
+      // Leaving stuckSince intact causes the next tick to re-evaluate and send
+      // a fresh round instead of freezing the pair forever.
+    }
+    return actions;
   }
 }
 

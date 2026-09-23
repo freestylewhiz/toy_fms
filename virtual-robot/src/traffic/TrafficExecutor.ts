@@ -14,6 +14,11 @@ export type TrafficGrant = {
   leaseDurationMs: number;
   zoneId: string;
   reason: string;
+  /** Identifies an authoritative v1 STOP. Absent on legacy grants. */
+  stopId?: string;
+  stopGeneration?: string | number | bigint;
+  controlEpoch?: string | number | bigint;
+  sessionId?: string;
 };
 
 export type TrafficExecutorHooks = {
@@ -30,6 +35,7 @@ export type TrafficExecutorHooks = {
     retained: Corridor;
   }) => void;
   sendTrafficBid?: (zoneId: string, seed: number) => void;
+  sendTrafficStopCheck?: (body: { stop_id: string; stop_generation: string }) => void;
   sendEvasionReply?: (body: Record<string, unknown>) => void;
   /** Controller handles E2/E3 path changes (REROUTE / VACATE). */
   onEvasionPlan?: (payload: Record<string, unknown>) => void;
@@ -73,6 +79,15 @@ export interface TrafficExecutor {
     theta: number;
     points: { x: number; y: number }[];
   }[]): void;
+  onTrafficStopStatus?(status: {
+    stop_id: string;
+    stop_generation: string | number | bigint;
+    decision: string;
+    reason?: string;
+    control_epoch?: string | number | bigint;
+    session_id?: string;
+  }): void;
+  setControlState?(state: { controlEpoch: number; sessionId: string }): void;
 }
 
 export function parseCapsuleList(raw: any): Capsule[] {

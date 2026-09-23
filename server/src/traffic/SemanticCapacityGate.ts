@@ -1,4 +1,5 @@
 import { zoneTouchesPoint } from "../../../shared/semanticNavigation.ts";
+import { MAP_ID } from '../../../shared/constants.ts';
 import type { ZoneResource } from "../../../shared/semantic.ts";
 import type { TrafficPlanAction, TrafficStatus } from "../../../shared/traffic/types.ts";
 import type { TrafficWorldSnapshot } from "./TrafficPolicy.ts";
@@ -105,7 +106,7 @@ export class SemanticCapacityGate {
         const epoch = r?.controlEpoch ?? old?.controlEpoch ?? 0;
         const changed = old?.state !== state || old?.controlEpoch !== epoch || old?.queuePosition !== queuePosition;
         this.records.set(this.key(zone.id,robotId), {
-          resourceRef: { mapId: old?.resourceRef.mapId ?? "yard", kind: "zone", id: zone.id }, robotId, state,
+          resourceRef: { mapId: old?.resourceRef.mapId ?? MAP_ID, kind: "zone", id: zone.id }, robotId, state,
           requestId: old?.requestId ?? `semantic-${crypto.randomUUID()}`, controlEpoch: epoch,
           createdAt: old?.createdAt ?? now, updatedAt: changed ? now : old!.updatedAt,
           ...(queuePosition == null ? {} : {queuePosition}),
@@ -129,6 +130,22 @@ export class SemanticCapacityGate {
   }
 
   snapshot(): RuntimeOccupancy[] { return [...this.records.values()]; }
+
+  /** True when a robot's requested movement is still queued behind capacity. */
+  blocks(robotId: string, world: TrafficWorldSnapshot): boolean {
+    const robot = world.robots.find(r => r.robotId === robotId);
+    if (!robot) return true;
+    for (const zone of (world.zones ?? []).filter(z => GATED_KINDS.has(z.kind))) {
+      const wants = inside(zone, robot) || pathTouches(zone, this.near(robot));
+      if (!wants) continue;
+      const own = this.records.get(this.key(zone.id, robotId));
+      if (own?.state === "queued") return true;
+      const holders = [...this.records.values()].filter(o => o.resourceRef.id === zone.id && o.robotId !== robotId && o.state !== "queued");
+      const capacity = Math.max(1, Math.floor(zone.capacity ?? 1));
+      if (!own && holders.length >= capacity) return true;
+    }
+    return false;
+  }
 
   private persist(): void {
     if (!this.runtimeStore) return;

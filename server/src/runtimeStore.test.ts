@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { RuntimeStore } from "./runtimeStore.ts";
+import { RuntimeStore, type RobotRuntime } from "./runtimeStore.ts";
 import { Database } from "bun:sqlite";
 
-function robot(id = "r1") {
+function robot(id = "r1"): RobotRuntime {
   return { robotId: id, x: 1, y: 2, theta: 0, workState: "idle", fmsControlState: "enabled" as const, connectionState: "offline" as const, connectionReason: "", driveState: "unknown", driveContextJson: "[]", controlEpoch: 0, controlReady: false, reportedAt: 0, stateChangedAt: 0, sessionId: "", navigationMode: "unknown", pathPlanningAuthority: "unknown" };
 }
 
@@ -35,4 +35,20 @@ test("existing pre-runtime database receives additive migrations", () => {
   expect(store.getRobot("legacy")?.controlEpoch).toBe(0);
   store.close();
   unlinkSync(path); try { unlinkSync(`${path}-wal`); } catch { /* optional */ } try { unlinkSync(`${path}-shm`); } catch { /* optional */ }
+});
+
+test("operator disable releases every logical claim and advances the epoch", () => {
+  const path = `/tmp/runtime-force-${crypto.randomUUID()}.sqlite`;
+  const store = new RuntimeStore(path);
+  store.upsertRobot(robot());
+  store.upsertOccupancy({ resourceRef: { mapId: "yard", kind: "zone", id: "z1" }, robotId: "r1", state: "occupied", requestId: "a", controlEpoch: 0, createdAt: 1, updatedAt: 1 });
+  store.upsertOccupancy({ resourceRef: { mapId: "yard", kind: "edge", id: "e1" }, robotId: "r1", state: "queued", requestId: "b", controlEpoch: 0, createdAt: 2, updatedAt: 2 });
+  const result = store.disableAndReleaseAll({ robotId: "r1", expectedEpoch: 0, releasedBy: "operator" });
+  expect(result.ok).toBe(true);
+  expect(result.released).toHaveLength(2);
+  expect(store.listOccupancies()).toHaveLength(0);
+  expect(store.getRobot("r1")).toMatchObject({ fmsControlState: "disabled", controlReady: false, controlEpoch: 1 });
+  expect(store.listOccupancies(true).every(item => item.releaseReason === "operator_disabled")).toBe(true);
+  store.close();
+  unlinkSync(path); try { unlinkSync(`${path}-wal`); } catch {} try { unlinkSync(`${path}-shm`); } catch {}
 });

@@ -35,7 +35,18 @@ function robot(
     localPath,
     planId: "",
     connected: true,
+    fmsControlState: "enabled",
+    controlReady: true,
+    controlEpoch: 1,
+    poseObserved: true,
+    observedAtMs: 0,
+    localPlanObservedAtMs: 0,
+    sessionId: `${id}-session`,
   };
+}
+
+function reply(evade: { robotId: string; zoneId: string; roundId: string }, result: string) {
+  return { result, zone_id: evade.zoneId, round_id: evade.roundId, control_epoch: 1, session_id: `${evade.robotId}-session` };
 }
 
 function world(nowMs: number, robots: TrafficWorldSnapshot["robots"]): TrafficWorldSnapshot {
@@ -93,13 +104,13 @@ describe("LocalPlanPolicy", () => {
     const first = p.tick(world(DEADLOCK_CONFIRM_MS + 50, [a, b]));
     const evade = first.find((x) => x.kind === "evasion_request");
     if (evade?.kind !== "evasion_request") throw new Error("expected evasion");
-    const next = p.onEvasionReply(evade.robotId, { result: "NONE" });
+    const next = p.onEvasionReply(evade.robotId, reply(evade, "NONE"));
     const vacate = next.find((x) => x.kind === "evasion_request");
     expect(vacate?.kind).toBe("evasion_request");
     if (vacate?.kind === "evasion_request") expect(vacate.mode).toBe("VACATE");
   });
 
-  test("REROUTE success resumes the winner", () => {
+  test("REROUTE acknowledgement waits for fresh clearance", () => {
     const p = new LocalPlanPolicy(fakeCtx());
     const a = robot("robot-1", 0, 0, [
       { x: 0, y: 0 },
@@ -115,10 +126,8 @@ describe("LocalPlanPolicy", () => {
     if (evade?.kind !== "evasion_request") throw new Error("expected evasion");
     const loser = evade.robotId;
     const winner = loser === "robot-1" ? "robot-2" : "robot-1";
-    const replies = p.onEvasionReply(loser, { result: "REROUTE" });
-    const resume = replies.find((x) => x.kind === "zone_update" && x.robotId === winner);
-    expect(resume?.kind).toBe("zone_update");
-    if (resume?.kind === "zone_update") expect(resume.state).toBe("resume");
+    const replies = p.onEvasionReply(loser, reply(evade, "REROUTE"));
+    expect(replies.some((x) => x.kind === "grant" && x.robotId === winner && x.grant.signal === "PROCEED")).toBe(false);
   });
 
   test("VACATE keeps winner stopped until loser clears the plan", () => {
@@ -137,10 +146,11 @@ describe("LocalPlanPolicy", () => {
     if (evade?.kind !== "evasion_request") throw new Error("expected evasion");
     const loser = evade.robotId;
     const winner = loser === "robot-1" ? "robot-2" : "robot-1";
-    const afterNone = p.onEvasionReply(loser, { result: "NONE" });
+    const afterNone = p.onEvasionReply(loser, reply(evade, "NONE"));
     const vacateReq = afterNone.find((x) => x.kind === "evasion_request");
     if (vacateReq?.kind !== "evasion_request") throw new Error("expected vacate");
-    const vacateAck = p.onEvasionReply(loser, { result: "VACATE" });
+    if (vacateReq?.kind !== "evasion_request") throw new Error("expected vacate");
+    const vacateAck = p.onEvasionReply(loser, reply(vacateReq, "VACATE"));
     expect(vacateAck.some((x) => x.kind === "zone_update" && x.robotId === winner)).toBe(false);
 
     const stillOverlap = p.tick(

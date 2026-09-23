@@ -31,6 +31,24 @@ function chunk(type: string, data: Uint8Array): Uint8Array {
   return out;
 }
 
+/** Grayscale map PNG avoids a 400 MB RGBA intermediate for 100M cells. */
+export function encodeOccupancyPng(width: number, height: number, grid: Uint8Array): Uint8Array {
+  if (grid.length !== width * height) throw new Error("Invalid occupancy size");
+  const raw = new Uint8Array(height * (width + 1));
+  for (let y = 0; y < height; y++) {
+    const row = y * (width + 1) + 1;
+    for (let x = 0; x < width; x++) raw[row + x] = grid[y * width + x] ? 248 : 28;
+  }
+  const header = new Uint8Array(13);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, width); view.setUint32(4, height); header[8] = 8;
+  const parts = [new Uint8Array([137,80,78,71,13,10,26,10]), chunk("IHDR", header),
+    chunk("IDAT", deflateSync(raw)), chunk("IEND", new Uint8Array())];
+  const output = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0; for (const part of parts) { output.set(part, at); at += part.length; }
+  return output;
+}
+
 /** 8-bit RGBA PNG, filter 0. */
 export function encodePngRgba(width: number, height: number, pixels: Uint8Array): Uint8Array {
   if (pixels.length !== width * height * 4) {

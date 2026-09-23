@@ -21,7 +21,17 @@
     "test:traffic-v1": "bun test shared/traffic/localPlan.test.ts server/src/traffic/policies/LocalPlanPolicy.test.ts && bun run scripts/v1_overlap_sim.ts",
     "check:properties:web": "bun run web-client/check_properties.ts",
     "check:workspace:web": "bun run web-client/check_workspace.ts",
-    "check:runtime:web": "bun run web-client/check_runtime.ts"
+    "check:runtime:web": "bun run web-client/check_runtime.ts",
+    "maps:large-lab": "bun run scripts/generate_large_lab.ts",
+    "pm2:start": "pm2 start ecosystem.config.cjs --update-env",
+    "pm2:restart": "pm2 restart ecosystem.config.cjs --update-env",
+    "pm2:stop": "pm2 stop ecosystem.config.cjs",
+    "pm2:delete": "pm2 delete ecosystem.config.cjs",
+    "pm2:save": "pm2 save",
+    "check:large:web": "bun run web-client/check_large_map.ts",
+    "check:teleporter:web": "bun run scripts/check_teleporter_web.ts",
+    "check:blackbox:traffic": "bun run scripts/check_blackbox_traffic.ts",
+    "check:blackbox:web": "bun run web-client/check_blackbox.ts"
   },
   "devDependencies": {
     "playwright": "^1.63.0"
